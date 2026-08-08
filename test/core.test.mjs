@@ -8,6 +8,8 @@ import { render } from '../src/schedule.mjs';
 import { rotate, thin, densify, upsample, ratchetPattern } from '../src/transform.mjs';
 import { arrange, arrangementMs, evolve, chain } from '../src/arrange.mjs';
 import { padToNote, noteToPad, resolveNote } from '../src/pads.mjs';
+import { metricWeight, effectiveWeight, applyWeight } from '../src/dynamics.mjs';
+import { clockEvents, withClock, CLOCK, START, STOP } from '../src/clock.mjs';
 
 const show = (bools) => bools.map((b) => (b ? 'x' : '.')).join('');
 
@@ -158,6 +160,77 @@ test('chain expands a written form', () => {
   assert.equal(sections.length, 4);
   assert.deepEqual(sections[3].pattern.tracks, b.tracks);
   assert.throws(() => chain({ a }, 'a q'), /no pattern named/);
+});
+
+test('metric weight follows the nested hierarchy of the bar', () => {
+  const w = (i) => metricWeight(i, 4, 4);
+  assert.equal(w(0), 1, 'downbeat is strongest');
+  assert.ok(w(8) > w(4), 'beat 3 beats beats 2 and 4');
+  assert.ok(w(4) > w(2), 'quarters beat eighths');
+  assert.ok(w(2) > w(1), 'eighths beat sixteenths');
+  assert.equal(w(4), w(12), 'beats 2 and 4 are equal');
+  assert.equal(w(16), w(0), 'weights repeat each bar');
+});
+
+test('metric weight generalises to other grids', () => {
+  assert.equal(metricWeight(0, 3, 4), 1);
+  assert.ok(metricWeight(6, 3, 4) > metricWeight(1, 3, 4));
+});
+
+test('dynamics widen velocity spread without leaving MIDI range', () => {
+  const spec = { bpm: 120, tracks: { hat: 'oooooooooooooooo' } };
+  const flat = render(pattern({ ...spec, dynamics: { depth: 0 } }), { seed: 5 })
+    .filter((e) => (e.bytes[0] & 0xf0) === 0x90).map((e) => e.bytes[2]);
+  const shaped = render(pattern({ ...spec, dynamics: { depth: 0.45, conformity: 0.8 } }), { seed: 5 })
+    .filter((e) => (e.bytes[0] & 0xf0) === 0x90).map((e) => e.bytes[2]);
+
+  assert.equal(new Set(flat).size, 1, 'depth 0 leaves velocities flat');
+  assert.ok(new Set(shaped).size > 3, 'shaping produces real variation');
+  assert.ok(Math.max(...shaped) > Math.min(...shaped) + 15, 'spread is audible');
+  for (const v of shaped) assert.ok(v >= 1 && v <= 127);
+});
+
+test('anchorDownbeat controls whether beat 1 can be displaced', () => {
+  // conformity 0 forces syncopation at every eligible step.
+  const always = () => 0;
+  assert.equal(effectiveWeight(1, 0, always, true), 1, 'anchored: beat 1 holds');
+  assert.ok(effectiveWeight(1, 0, always, false) < 1, 'unanchored: beat 1 can give way');
+  assert.ok(effectiveWeight(0.35, 0, always, true) > 0.35, 'weak steps get leaned on');
+});
+
+test('conformity 1 reproduces pure metric weighting', () => {
+  // rand() yields [0, 1), so the nearest-to-certain draw is just under 1.
+  const never = () => 0.999999;
+  for (const w of [0.35, 0.49, 0.63, 0.76]) assert.equal(effectiveWeight(w, 1, never), w);
+});
+
+test('downbeat stays the loudest step under normal settings', () => {
+  const p = pattern({
+    bpm: 120,
+    dynamics: { depth: 0.45, conformity: 0.8 },
+    tracks: { kick: 'oooooooooooooooo' },
+  });
+  const vels = render(p, { seed: 11 }).filter((e) => (e.bytes[0] & 0xf0) === 0x90).map((e) => e.bytes[2]);
+  assert.equal(vels[0], Math.max(...vels), 'step 0 is the peak');
+});
+
+test('clock emits 24 ticks per beat wrapped in transport', () => {
+  const ev = clockEvents(120, 2000);          // 120bpm, one 4/4 bar
+  assert.equal(ev.filter((e) => e.bytes[0] === CLOCK).length, 96, '4 beats x 24 ppqn');
+  assert.equal(ev.filter((e) => e.bytes[0] === START).length, 1);
+  assert.equal(ev.filter((e) => e.bytes[0] === STOP).length, 1);
+});
+
+test('clock can run without transport messages', () => {
+  const ev = clockEvents(120, 1000, { transport: false });
+  assert.equal(ev.filter((e) => e.bytes[0] === START || e.bytes[0] === STOP).length, 0);
+});
+
+test('withClock keeps events ordered and start ahead of the first note', () => {
+  const p = pattern({ bpm: 120, tracks: { kick: 'x...x...x...x...' } });
+  const merged = withClock(render(p, {}), 120, patternMs(p));
+  for (let i = 1; i < merged.length; i++) assert.ok(merged[i].ms >= merged[i - 1].ms);
+  assert.equal(merged[0].bytes[0], START, 'transport start leads');
 });
 
 test('randomTrack respects density bounds', () => {

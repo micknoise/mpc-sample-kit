@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MPC Sample — pattern control</title>
+<style>
+  :root {
+    --bg: #14151a; --panel: #1c1e25; --line: #2c2f39;
+    --ink: #e6e7ea; --dim: #9095a3; --accent: #ffb454; --accent-dim: #6b4b1f;
+    --ok: #7ac488; --bad: #e0685f;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f6f6f4; --panel: #fff; --line: #e0e0dc;
+      --ink: #1c1e25; --dim: #6b7080; --accent: #c4761a; --accent-dim: #f0dcc0;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 1.5rem; background: var(--bg); color: var(--ink);
+    font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  h1 { font-size: 1rem; font-weight: 600; margin: 0 0 .25rem; letter-spacing: .02em; }
+  .sub { color: var(--dim); margin: 0 0 1.5rem; font-size: 12px; }
+  .wrap { max-width: 1000px; margin: 0 auto; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 6px; padding: 1rem; margin-bottom: 1rem;
+  }
+  .row { display: flex; flex-wrap: wrap; gap: 1rem; align-items: flex-end; }
+  label { display: block; font-size: 11px; color: var(--dim); margin-bottom: .25rem; text-transform: uppercase; letter-spacing: .05em; }
+  select, input[type=text], input[type=number] {
+    background: var(--bg); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 4px; padding: .4rem .5rem; font: inherit; font-size: 13px;
+  }
+  input[type=range] { width: 140px; accent-color: var(--accent); }
+  .field { min-width: 0; }
+  .val { color: var(--accent); font-variant-numeric: tabular-nums; }
+  button {
+    background: var(--accent); color: #14151a; border: 0; border-radius: 4px;
+    padding: .55rem 1.1rem; font: inherit; font-weight: 600; cursor: pointer;
+  }
+  button.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  #status { font-size: 12px; color: var(--dim); }
+  #status.ok { color: var(--ok); } #status.bad { color: var(--bad); }
+  .grid { display: grid; gap: 3px; margin-top: .25rem; }
+  .track { display: grid; grid-template-columns: 84px 1fr; gap: 8px; align-items: center; }
+  .track-name { font-size: 11px; color: var(--dim); text-align: right; overflow: hidden; text-overflow: ellipsis; }
+  .steps { display: grid; gap: 3px; }
+  .step {
+    height: 26px; border-radius: 3px; background: var(--line);
+    display: flex; align-items: flex-end; overflow: hidden;
+  }
+  .step.beat { outline: 1px solid var(--accent-dim); }
+  .step i { display: block; width: 100%; background: var(--accent); }
+  .scroll { overflow-x: auto; }
+  code { background: var(--bg); padding: .1rem .3rem; border-radius: 3px; font-size: 12px; }
+  .note { color: var(--dim); font-size: 12px; margin-top: .75rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>MPC Sample — pattern control</h1>
+  <p class="sub">Web MIDI. Chromium only: Safari and Firefox do not implement the API.</p>
+
+  <div class="panel">
+    <div class="row">
+      <div class="field">
+        <label for="port">MIDI output</label>
+        <select id="port"><option>— requesting access —</option></select>
+      </div>
+      <div class="field"><span id="status">starting up</span></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="row">
+      <div class="field">
+        <label for="style">Style</label>
+        <select id="style"></select>
+      </div>
+      <div class="field">
+        <label for="euclid">Euclid (overrides tracks)</label>
+        <input type="text" id="euclid" placeholder="kick=4/16,snare=2/16@4,hat=7/16" size="34">
+      </div>
+      <div class="field">
+        <label for="bpm">BPM <span class="val" id="bpmv"></span></label>
+        <input type="range" id="bpm" min="60" max="180" step="1">
+      </div>
+      <div class="field">
+        <label for="swing">Swing <span class="val" id="swingv"></span></label>
+        <input type="range" id="swing" min="0" max="0.5" step="0.01">
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="row">
+      <div class="field">
+        <label for="dyn">Dynamics depth <span class="val" id="dynv"></span></label>
+        <input type="range" id="dyn" min="0" max="1" step="0.05" value="0.45">
+      </div>
+      <div class="field">
+        <label for="conf">Metric conformity <span class="val" id="confv"></span></label>
+        <input type="range" id="conf" min="0" max="1" step="0.05" value="0.8">
+      </div>
+      <div class="field">
+        <label for="anchor">Anchor beat 1</label>
+        <select id="anchor"><option value="1">yes</option><option value="0">no — dissolve the pulse</option></select>
+      </div>
+      <div class="field">
+        <label for="bars">Bars <span class="val" id="barsv"></span></label>
+        <input type="range" id="bars" min="1" max="32" step="1" value="8">
+      </div>
+      <div class="field">
+        <label for="drift">Drift <span class="val" id="driftv"></span></label>
+        <input type="range" id="drift" min="0" max="1" step="0.05" value="0.3">
+      </div>
+      <div class="field">
+        <label for="fillEvery">Fill every</label>
+        <input type="number" id="fillEvery" min="0" max="16" step="1" value="4" style="width:70px">
+      </div>
+      <div class="field">
+        <label for="seed">Seed</label>
+        <input type="number" id="seed" min="1" step="1" value="1" style="width:80px">
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="row" style="margin-bottom:1rem">
+      <button id="play">Play</button>
+      <button id="stop" class="ghost" disabled>Stop</button>
+      <button id="reseed" class="ghost">New seed</button>
+      <label style="margin:0"><input type="checkbox" id="sync"> send MIDI clock</label>
+    </div>
+    <div class="scroll"><div class="grid" id="grid"></div></div>
+    <p class="note">Bar 1 as written; later bars vary. Bar height shows velocity — metric
+      dynamics make heavy beats louder, with <span class="val" id="syncPct"></span> of hits
+      displaced onto weak steps.</p>
+  </div>
+</div>
+
+<script type="module">
+import { pattern, patternMs } from '../src/pattern.mjs';
+import { render } from '../src/schedule.mjs';
+import { style, styleNames, euclidTrack } from '../src/generate.mjs';
+import { evolve, arrange, arrangementMs } from '../src/arrange.mjs';
+import { withClock } from '../src/clock.mjs';
+import { resolveNote, DEFAULT_KIT } from '../src/pads.mjs';
+
+const $ = (id) => document.getElementById(id);
+const statusEl = $('status');
+let access = null, output = null, playing = false, stopTimer = null;
+
+function setStatus(msg, kind = '') { statusEl.textContent = msg; statusEl.className = kind; }
+
+// ------------------------------------------------------------------ MIDI
+
+async function initMidi() {
+  if (!navigator.requestMIDIAccess) {
+    setStatus('Web MIDI unavailable — use Chrome, Edge or Opera', 'bad');
+    $('port').innerHTML = '<option>unsupported</option>';
+    $('play').disabled = true;
+    return;
+  }
+  try {
+    access = await navigator.requestMIDIAccess({ sysex: false });
+    access.onstatechange = refreshPorts;
+    refreshPorts();
+  } catch (e) {
+    setStatus(`MIDI access denied: ${e.message}`, 'bad');
+    $('play').disabled = true;
+  }
+}
+
+function refreshPorts() {
+  const sel = $('port');
+  const outs = [...access.outputs.values()];
+  sel.innerHTML = '';
+  if (!outs.length) {
+    sel.innerHTML = '<option>no outputs found</option>';
+    setStatus('no MIDI outputs — is the MPC on USB MIDI, not disk mode?', 'bad');
+    $('play').disabled = true;
+    return;
+  }
+  for (const out of outs) {
+    const opt = document.createElement('option');
+    opt.value = out.id; opt.textContent = out.name;
+    sel.appendChild(opt);
+  }
+  const mpc = outs.find((o) => /mpc/i.test(o.name));
+  sel.value = (mpc ?? outs[0]).id;
+  output = access.outputs.get(sel.value);
+  $('play').disabled = false;
+  setStatus(`connected: ${output.name}`, 'ok');
+}
+
+$('port').addEventListener('change', (e) => {
+  output = access.outputs.get(e.target.value);
+  setStatus(`connected: ${output.name}`, 'ok');
+});
+
+// ------------------------------------------------------------- build pattern
+
+function parseEuclid(spec) {
+  const tracks = {};
+  for (const part of spec.split(/[,\s]+/).filter(Boolean)) {
+    const m = /^([A-Za-z]\w*)=(\d+)\/(\d+)(?:@(-?\d+))?$/.exec(part);
+    if (!m) throw new Error(`bad euclid "${part}"`);
+    tracks[m[1]] = euclidTrack(+m[2], +m[3], { rotation: +(m[4] ?? 0), accentEvery: 4 });
+  }
+  return tracks;
+}
+
+function currentPattern() {
+  const spec = style($('style').value);
+  const eu = $('euclid').value.trim();
+  if (eu) spec.tracks = parseEuclid(eu);
+  spec.bpm = +$('bpm').value;
+  spec.swing = +$('swing').value;
+  spec.dynamics = {
+    depth: +$('dyn').value,
+    conformity: +$('conf').value,
+    anchorDownbeat: $('anchor').value === '1',
+  };
+  return pattern(spec);
+}
+
+function currentSections(p) {
+  return evolve(p, {
+    bars: +$('bars').value,
+    drift: +$('drift').value,
+    fillEvery: +$('fillEvery').value,
+    lock: ['kick'],
+    seed: +$('seed').value,
+  });
+}
+
+// ---------------------------------------------------------------- rendering
+
+/**
+ * Recovers the velocities that will actually sound, so the grid reflects the
+ * dynamics rather than the velocities as written.
+ *
+ * Rendering with swing disabled lets each event be mapped back to its step by
+ * rounding. Swing is purely positional and consumes no randomness, so removing
+ * it leaves the RNG stream — and therefore every velocity — untouched. Timing
+ * humanisation stays in for exactly that reason.
+ */
+function shapedTracks(p, seed) {
+  const flat = { ...p, swing: 0 };
+  const events = render(flat, { kit: undefined, seed, repeats: 1 });
+  const step = patternMs(p) / p.length;
+
+  const byNote = {};
+  for (const name of Object.keys(p.tracks)) byNote[resolveNote(name, DEFAULT_KIT)] = name;
+
+  const out = Object.fromEntries(
+    Object.entries(p.tracks).map(([name, steps]) => [name, new Array(steps.length).fill(0)]),
+  );
+  for (const e of events) {
+    if ((e.bytes[0] & 0xf0) !== 0x90) continue;
+    const name = byNote[e.bytes[1]];
+    if (!name) continue;
+    const i = Math.round(e.ms / step);
+    if (i >= 0 && i < out[name].length) out[name][i] = e.bytes[2];
+  }
+  return out;
+}
+
+function drawGrid(p) {
+  const grid = $('grid');
+  grid.innerHTML = '';
+  const cols = `repeat(${p.length}, minmax(14px, 1fr))`;
+  const shaped = shapedTracks(p, +$('seed').value);
+  for (const [name, steps] of Object.entries(shaped)) {
+    const row = document.createElement('div');
+    row.className = 'track';
+    const label = document.createElement('div');
+    label.className = 'track-name'; label.textContent = name;
+    const cells = document.createElement('div');
+    cells.className = 'steps'; cells.style.gridTemplateColumns = cols;
+    steps.forEach((v, i) => {
+      const cell = document.createElement('div');
+      cell.className = 'step' + (i % p.stepsPerBeat === 0 ? ' beat' : '');
+      if (v) {
+        const bar = document.createElement('i');
+        bar.style.height = `${Math.round((v / 127) * 100)}%`;
+        cell.appendChild(bar);
+        cell.title = `step ${i + 1} · velocity ${v}`;
+      }
+      cells.appendChild(cell);
+    });
+    row.append(label, cells);
+    grid.append(row);
+  }
+}
+
+// ------------------------------------------------------------------ playback
+
+function play() {
+  if (!output) return;
+  let p, sections, events, totalMs;
+  try {
+    p = currentPattern();
+    sections = currentSections(p);
+    events = arrange(sections, { seed: +$('seed').value });
+    totalMs = arrangementMs(sections);
+    if ($('sync').checked) events = withClock(events, p.bpm, totalMs);
+  } catch (e) {
+    setStatus(e.message, 'bad');
+    return;
+  }
+
+  // Web MIDI timestamps share the performance.now() timebase, so the browser
+  // handles delivery — same principle as the CoreMIDI path on the desktop.
+  const t0 = performance.now() + 120;
+  for (const e of events) output.send(e.bytes, t0 + e.ms);
+
+  playing = true;
+  $('play').disabled = true; $('stop').disabled = false;
+  setStatus(`playing ${sections.length} bars · ${events.length} events · ${(totalMs / 1000).toFixed(1)}s`, 'ok');
+  stopTimer = setTimeout(finished, totalMs + 400);
+}
+
+function finished() {
+  playing = false;
+  $('play').disabled = false; $('stop').disabled = true;
+  setStatus(output ? `connected: ${output.name}` : 'idle', 'ok');
+}
+
+function stop() {
+  if (!output) return;
+  clearTimeout(stopTimer);
+  if (output.clear) output.clear();          // drop anything still queued
+  output.send([0xb0, 0x7b, 0x00]);           // all notes off
+  output.send([0xfc]);                       // transport stop
+  finished();
+}
+
+// -------------------------------------------------------------------- wiring
+
+for (const name of styleNames()) {
+  const opt = document.createElement('option');
+  opt.value = name; opt.textContent = name;
+  $('style').appendChild(opt);
+}
+$('style').value = 'boom-bap';
+
+function syncFromStyle() {
+  const s = style($('style').value);
+  $('bpm').value = s.bpm;
+  $('swing').value = s.swing ?? 0;
+  refresh();
+}
+
+function refresh() {
+  $('bpmv').textContent = $('bpm').value;
+  $('swingv').textContent = (+$('swing').value).toFixed(2);
+  $('dynv').textContent = (+$('dyn').value).toFixed(2);
+  $('confv').textContent = (+$('conf').value).toFixed(2);
+  $('barsv').textContent = $('bars').value;
+  $('driftv').textContent = (+$('drift').value).toFixed(2);
+  $('syncPct').textContent = `${Math.round((1 - +$('conf').value) * 100)}%`;
+  try { drawGrid(currentPattern()); setStatus(output ? `connected: ${output.name}` : 'idle', output ? 'ok' : ''); }
+  catch (e) { setStatus(e.message, 'bad'); }
+}
+
+$('style').addEventListener('change', syncFromStyle);
+for (const id of ['bpm', 'swing', 'dyn', 'conf', 'bars', 'drift', 'fillEvery', 'seed', 'anchor', 'euclid']) {
+  $(id).addEventListener('input', refresh);
+}
+$('play').addEventListener('click', play);
+$('stop').addEventListener('click', stop);
+$('reseed').addEventListener('click', () => {
+  $('seed').value = Math.floor(Math.random() * 9999) + 1;
+  refresh();
+});
+
+syncFromStyle();
+initMidi();
+</script>
+</body>
+</html>

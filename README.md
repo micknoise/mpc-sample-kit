@@ -30,11 +30,16 @@ nothing will sound.
 ## Layout
 
 ```
-src/            pattern + scheduling core, framework-free ES modules
-bin/mpc-seq.mjs CLI: render a pattern and play it
-patterns/       example patterns
-tools/midi/     mpcmidi — zero-dependency CoreMIDI CLI
-docs/           hardware findings, verified vs assumed
+src/             pattern, dynamics, generation, transforms, arrangement, clock
+bin/mpc-seq.mjs  render a pattern or phrase and play it
+bin/mpc-live.mjs continuous generation, steerable while running
+bin/mpc-kit.mjs  audition pads and save a kit map
+web/             Web MIDI browser app (Chromium)
+patterns/        example patterns
+kits/            saved role->pad maps
+tools/midi/      mpcmidi — zero-dependency CoreMIDI CLI
+docs/            hardware findings, verified vs assumed
+test/            node --test suite
 ```
 
 The core in `src/` has no Node or browser dependencies, so the same rhythm code
@@ -123,6 +128,83 @@ The building blocks are composable directly from [`src/`](src/transform.mjs) if
 the CLI flags are too blunt — `rotate`, `thin`, `densify`, `mutate`, `shade`,
 `accentEvery`, `upsample`, `vary`, `fill`, plus `arrange`, `evolve` and `chain`
 for song form.
+
+## Dynamics
+
+Flat velocity is the clearest sign a beat was generated rather than played.
+Velocities are shaped by **metric position**: the more times a step index
+divides by two, the stronger the position, which falls straight out of the
+binary structure of the bar and generalises to any grid.
+
+For a 16-step bar the hierarchy is beat 1 (1.00) > beat 3 (0.76) > beats 2 and
+4 (0.63) > eighths (0.49) > sixteenths (0.35).
+
+| Flag | Effect |
+|---|---|
+| `--dynamics D` | how much metric position shapes volume (default 0.45) |
+| `--conformity C` | proportion of hits following the metre (default 0.8) |
+| `--no-anchor` | let beat 1 be de-accented too, dissolving the pulse |
+
+Conformity is what stops this becoming mechanical: at `0.8`, one hit in five is
+displaced onto a weak step instead, which is what syncopation *is*. By default
+beat 1 is exempt so the pulse stays anchored; `--no-anchor` removes that
+exemption when losing the downbeat is the point.
+
+```bash
+node bin/mpc-seq.mjs --style boom-bap --bars 8 --dynamics 0.6 --conformity 0.75
+```
+
+## Kits
+
+The role→pad map in [`src/pads.mjs`](src/pads.mjs) is a convention, not
+something read off the hardware. Audition the pads and save what you hear:
+
+```bash
+node bin/mpc-kit.mjs audition              # plays pads 1-16, announcing each
+node bin/mpc-kit.mjs pad 7                 # one pad
+node bin/mpc-kit.mjs save kick=1,snare=4,hat=9 --out kits/mine.json
+node bin/mpc-seq.mjs --style boom-bap --kit kits/mine.json
+```
+
+Kit specs merge over the defaults, so naming two pads does not orphan the rest.
+
+## Clock and transport
+
+`--sync` sends MIDI clock at 24 PPQN wrapped in transport start/stop. Because
+the notes and the clock come from the same timestamped event list, they cannot
+drift apart.
+
+```bash
+node bin/mpc-seq.mjs --style techno --bars 8 --sync
+```
+
+## Live performance
+
+`mpc-live` generates bars continuously and streams them ahead of the play
+cursor, so the groove can be steered while it runs:
+
+```bash
+node bin/mpc-live.mjs --style boom-bap
+```
+
+Then type `drift 0.6`, `bpm 128`, `dyn 0.7`, `conf 0.6`, `lock kick,hat`,
+`fill`, `seed 42`, `?` or `quit`.
+
+The look-ahead window (default 2s) is what buys the slack: CoreMIDI owns
+delivery timing, so this process only has to stay ahead, not be punctual.
+
+## Browser app
+
+[`web/index.html`](web/index.html) is the same core driven by Web MIDI, ready
+for GitHub Pages. Serve the repo root — it imports `../src/` directly, and ES
+modules will not load over `file://`:
+
+```bash
+python3 -m http.server 8765
+```
+
+then open `http://localhost:8765/web/`. Chromium only; Safari and Firefox do
+not implement Web MIDI.
 
 ## Tests
 

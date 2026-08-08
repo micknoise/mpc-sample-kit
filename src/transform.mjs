@@ -4,7 +4,7 @@
 // operators that lift those over a whole pattern. All are pure, and every
 // stochastic one takes an explicit RNG so results stay reproducible.
 
-import { rng } from './generate.mjs';
+import { rng } from './random.mjs';
 import { VELOCITY } from './pattern.mjs';
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));

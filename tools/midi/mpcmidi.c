@@ -102,6 +102,9 @@ static int cmd_monitor(const char *port, double seconds) {
     return 0;
 }
 
+// How many events to accumulate before handing a batch to CoreMIDI.
+#define FLUSH_EVERY 32
+
 static uint64_t ns_to_host(uint64_t ns) {
     static mach_timebase_info_data_t tb;
     if (!tb.denom) mach_timebase_info(&tb);
@@ -161,6 +164,17 @@ static int cmd_play(const char *port) {
         }
         cur = next;
         queued++;
+
+        // Flush periodically rather than only at EOF, so a producer can stream
+        // events in and have them scheduled while it keeps writing. Timestamps
+        // are absolute, so flushing early never disturbs timing — CoreMIDI just
+        // holds the events until they are due. This is what makes live mode
+        // possible without the player needing to know anything about it.
+        if (queued >= FLUSH_EVERY) {
+            MIDISend(out, dest, pl);
+            sent += queued; queued = 0;
+            cur = MIDIPacketListInit(pl);
+        }
     }
 
     if (queued) {

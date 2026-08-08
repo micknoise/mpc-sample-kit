@@ -18,6 +18,8 @@ import { render, toMpcmidi } from '../src/schedule.mjs';
 import { style, styleNames, euclidTrack } from '../src/generate.mjs';
 import { ratchetPattern } from '../src/transform.mjs';
 import { arrange, arrangementMs, evolve } from '../src/arrange.mjs';
+import { withClock } from '../src/clock.mjs';
+import { DEFAULT_KIT } from '../src/pads.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const MPCMIDI = resolve(here, '../tools/midi/mpcmidi');
@@ -33,6 +35,16 @@ shape
   --bpm N              tempo
   --swing F            0-1, delay of every second step (musical: 0.1-0.3)
   --ratchet P          0-1, probability of a hit becoming a roll
+
+dynamics
+  --dynamics D         0-1, how much metric position shapes volume (default 0.45)
+  --conformity C       0-1, proportion of hits following the metre (default 0.8);
+                       the remainder are displaced onto weak steps
+  --no-anchor          allow beat 1 itself to be de-accented, dissolving the pulse
+
+kit and sync
+  --kit FILE|SPEC      role->pad map, a .json file or "kick=1,snare=4,hat=9"
+  --sync               send MIDI clock and transport alongside the notes
 
 arrangement
   --bars N             evolve into an N-bar phrase instead of looping
@@ -58,6 +70,11 @@ function parseArgs(argv) {
     switch (a) {
       case '--dry-run': o.dryRun = true; break;
       case '--list-styles': o.listStyles = true; break;
+      case '--sync': o.sync = true; break;
+      case '--no-anchor': o.anchorDownbeat = false; break;
+      case '--kit': o.kit = argv[++i]; break;
+      case '--dynamics': o.dynamics = num(argv[++i], a); break;
+      case '--conformity': o.conformity = num(argv[++i], a); break;
       case '--style': o.style = argv[++i]; break;
       case '--euclid': o.euclid = argv[++i]; break;
       case '--port': o.port = argv[++i]; break;
@@ -77,6 +94,25 @@ function parseArgs(argv) {
     }
   }
   return { o, rest };
+}
+
+/**
+ * Accepts either a path to a kit .json or an inline "kick=1,snare=4" spec.
+ *
+ * Merged over the default map rather than replacing it, so naming two pads does
+ * not silently orphan every other track in the pattern.
+ */
+function loadKit(arg) {
+  if (arg.includes('=')) {
+    const kit = {};
+    for (const part of arg.split(/[,\s]+/).filter(Boolean)) {
+      const m = /^([A-Za-z][\w]*)=(\d+)$/.exec(part);
+      if (!m) throw new Error(`bad kit mapping "${part}" — expected name=pad`);
+      kit[m[1]] = Number(m[2]);
+    }
+    return { ...DEFAULT_KIT, ...kit };
+  }
+  return { ...DEFAULT_KIT, ...JSON.parse(readFileSync(arg, 'utf8')) };
 }
 
 /** "kick=4/16,snare=2/16@4,hat=7/16" -> { kick: [...], snare: [...] } */
@@ -111,6 +147,12 @@ try {
   if (o.euclid) spec.tracks = { ...spec.tracks, ...parseEuclid(o.euclid) };
   if (o.bpm !== undefined) spec.bpm = o.bpm;
   if (o.swing !== undefined) spec.swing = o.swing;
+  if (o.kit) spec.kit = loadKit(o.kit);
+
+  spec.dynamics = { ...spec.dynamics };
+  if (o.dynamics !== undefined) spec.dynamics.depth = o.dynamics;
+  if (o.conformity !== undefined) spec.dynamics.conformity = o.conformity;
+  if (o.anchorDownbeat === false) spec.dynamics.anchorDownbeat = false;
 
   let p = pattern(spec);
   if (o.ratchet) p = ratchetPattern(p, { rollProb: o.ratchet, rand: undefined });
@@ -142,9 +184,13 @@ try {
     label = `${repeats}x loop`;
   }
 
+  if (o.sync) events = withClock(events, p.bpm, totalMs);
+
+  const dyn = p.dynamics;
   console.error(
     `${p.bpm} bpm · ${p.length} steps · ${Object.keys(p.tracks).length} tracks · ` +
-    `${label} · ${events.length} events · ${(totalMs / 1000).toFixed(1)}s`,
+    `${label} · dyn ${dyn.depth}/${dyn.conformity}${dyn.anchorDownbeat ? '' : ' unanchored'}` +
+    `${o.sync ? ' · +clock' : ''} · ${events.length} events · ${(totalMs / 1000).toFixed(1)}s`,
   );
 
   const text = toMpcmidi(events);

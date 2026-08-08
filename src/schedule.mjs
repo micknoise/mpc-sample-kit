@@ -7,17 +7,8 @@
 
 import { resolveNote, DEFAULT_KIT } from './pads.mjs';
 import { stepMs, patternMs } from './pattern.mjs';
-
-/** Small deterministic PRNG, so "humanised" output stays reproducible. */
-function mulberry32(seed) {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
+import { rng } from './random.mjs';
+import { metricWeight, effectiveWeight, applyWeight } from './dynamics.mjs';
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
@@ -46,7 +37,9 @@ export function render(p, opts = {}) {
 
   if (channel < 1 || channel > 16) throw new RangeError('channel must be 1-16');
 
-  const rand = mulberry32(seed);
+  const rand = rng(seed);
+  const { depth, conformity, anchorDownbeat } =
+    p.dynamics ?? { depth: 0, conformity: 1, anchorDownbeat: true };
   const noteOn = 0x90 | (channel - 1);
   const noteOff = 0x80 | (channel - 1);
   const step = stepMs(p);
@@ -69,7 +62,15 @@ export function render(p, opts = {}) {
         if (p.swing && i % 2 === 1) t += p.swing * step;
         if (p.humanizeMs) t += (rand() * 2 - 1) * p.humanizeMs;
 
+        // Metric dynamics first — that is the musical intent. Humanisation is
+        // then jitter applied on top, not a substitute for it.
         let v = vel;
+        if (depth) {
+          const w = effectiveWeight(
+            metricWeight(i, p.stepsPerBeat, p.beatsPerBar), conformity, rand, anchorDownbeat,
+          );
+          v = applyWeight(v, w, depth);
+        }
         if (p.humanizeVel) v += Math.round((rand() * 2 - 1) * p.humanizeVel);
         v = clamp(Math.round(v), 1, 127);
 

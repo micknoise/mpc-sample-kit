@@ -15,6 +15,8 @@
 //     hat:  'o.o.o.o.o.o.o.o.',
 //   }});
 
+import { DEFAULT_DYNAMICS } from './dynamics.mjs';
+
 export const VELOCITY = { x: 110, o: 90, s: 45 };
 
 const IGNORED = new Set([' ', '|', '-']);
@@ -50,9 +52,11 @@ export function pattern(spec) {
     bpm,
     tracks,
     stepsPerBeat = 4,
+    beatsPerBar = 4,
     swing = 0,
     humanizeMs = 0,
     humanizeVel = 0,
+    dynamics = {},
   } = spec;
 
   if (!(bpm > 0)) throw new Error('bpm must be positive');
@@ -66,7 +70,11 @@ export function pattern(spec) {
 
   const length = Math.max(...Object.values(parsed).map((s) => s.length));
 
-  return { bpm, stepsPerBeat, swing, humanizeMs, humanizeVel, tracks: parsed, length };
+  return {
+    bpm, stepsPerBeat, beatsPerBar, swing, humanizeMs, humanizeVel,
+    dynamics: { ...DEFAULT_DYNAMICS, ...dynamics },
+    tracks: parsed, length,
+  };
 }
 
 /** Duration of one step in milliseconds. */
