@@ -33,6 +33,9 @@ nothing will sound.
 src/             pattern, dynamics, generation, transforms, arrangement, clock
 src/gm.mjs       General MIDI note map, for when the MPC is not the target
 src/synth.mjs    the same kit synthesised in the browser, for no hardware at all
+src/soundfont.mjs  a sampled GM kit, played from a SoundFont bank
+web/vendor/      checked-in SoundFont player (see its README)
+web/soundfonts/  the GM sound bank itself
 bin/mpc-seq.mjs  render a pattern or phrase and play it
 bin/mpc-live.mjs continuous generation, steerable while running
 bin/mpc-kit.mjs  audition pads and save a kit map
@@ -312,11 +315,41 @@ All 47 GM percussion notes have a voice, synthesised rather than sampled: no
 assets, no network, and the page stays static. Note-offs are ignored, as the
 MPC's one-shot pads ignore them.
 
-It is also the most punctual output here. Voices are scheduled directly on the
-audio clock, which is sample-accurate — no port, no bridge, no timer between
-the schedule and the sound. `getOutputTimestamp()` lines the audio clock up
-against `performance.now()`, so a note is *audible* when it was asked for
-rather than merely queued then.
+It is also among the most punctual outputs here. Voices are scheduled directly
+on the audio clock, which is sample-accurate — no port, no bridge, no timer
+between the schedule and the sound. `contextTimeFor()` in
+[`src/audioclock.mjs`](src/audioclock.mjs) lines the audio clock up against
+`performance.now()` using `getOutputTimestamp()`, so a note is *audible* when
+it was asked for rather than merely queued then.
+
+## SoundFont
+
+The synthesised kit sounds like a drum machine, because that is what it is. For
+recorded drums there is a third output, playing
+[GeneralUser GS](https://github.com/mrbumpy409/GeneralUser-GS) through
+[SpessaSynth](https://github.com/spessasus/spessasynth_lib) — both vendored, see
+[`web/vendor/README.md`](web/vendor/README.md) for versions and licences.
+
+It is a **32MB download**, so it loads when selected rather than at page load;
+the built-in synth is what keeps the page instant. The browser caches it after
+the first time. Progress is reported on the status line.
+
+**It brings the GM drum kits with it.** GeneralUser GS carries thirteen —
+Standard 1-3, Room, Power, Electronic, 808/909, Dance, Jazz, Brush, Orchestral,
+SFX, CM-64/32L — and the selector is populated by reading the bank's own
+presets, so a different bank dropped in later describes itself with no code
+change.
+
+Selecting a kit is an ordinary program change on the percussion channel, which
+means **the same selector drives an external GM sound module**. It stays
+disabled for a pad map, where a program change would tell an MPC to switch
+program — not what someone choosing a General MIDI kit is asking for.
+
+[`src/soundfont.mjs`](src/soundfont.mjs) is only the MIDI-to-engine adapter; the
+engine is injected, so the core keeps its no-dependencies property and the
+player could be swapped without touching it. Scheduling is sample-accurate here
+too: the engine takes an AudioContext time per event, so the transport's
+look-ahead timestamps are honoured exactly rather than drained by a timer.
 
 ## Clock and transport
 
@@ -364,6 +397,10 @@ the page picks between them without being asked:
 | An MPC | the MPC | pads 1-16 | 1 |
 | Some other MIDI device | that device | General MIDI | 10 |
 | Nothing, or no Web MIDI | built-in synth | General MIDI | 10 |
+
+The output selector always also offers the **built-in synth** and the
+**SoundFont**, so either can be chosen over an attached device — which is the
+point when comparing a pattern against the MPC's own kit.
 
 The **Kit** selector overrides the guess, and stops following the output once
 touched — re-plugging a cable should not overrule a choice already made. Custom

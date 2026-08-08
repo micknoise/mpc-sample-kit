@@ -118,6 +118,39 @@ export async function createTicker(context, opts = {}) {
 }
 
 /**
+ * Converts a performance.now() timestamp into an AudioContext time.
+ *
+ * Web MIDI's send() takes the former and the audio graph schedules in the
+ * latter, so anything that plays sound rather than sending it needs this
+ * bridge — both the built-in synth and the soundfont engine.
+ *
+ * getOutputTimestamp pairs the two clocks at the same instant, which also
+ * accounts for the device's output latency: schedule against that pairing and
+ * the note is *audible* when asked for, not merely queued then. Where it is
+ * missing, sampling both clocks together is close enough — the error is a
+ * render quantum, a couple of milliseconds.
+ *
+ * Never returns a time in the past: a note that was scheduled late plays now
+ * rather than never.
+ *
+ * @param {BaseAudioContext} context
+ * @param {number|null} at          performance.now() milliseconds, or null for now
+ * @param {function} [now]          the performance clock, injectable for tests
+ */
+export function contextTimeFor(context, at, now = () => performance.now()) {
+  if (at == null) return context.currentTime;
+
+  let target;
+  const stamp = context.getOutputTimestamp?.();
+  if (stamp && stamp.performanceTime > 0 && stamp.contextTime > 0) {
+    target = stamp.contextTime + (at - stamp.performanceTime) / 1000;
+  } else {
+    target = context.currentTime + (at - now()) / 1000;
+  }
+  return Math.max(context.currentTime, target);
+}
+
+/**
  * Creates and resumes an AudioContext, which on iOS must happen inside a user
  * gesture. Returns null rather than throwing when Web Audio is unavailable.
  */

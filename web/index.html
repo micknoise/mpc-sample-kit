@@ -79,6 +79,17 @@
     #status { display: block; padding: .35rem 0; }
   }
 </style>
+<!-- Resolves the bare specifiers inside the vendored SpessaSynth build. There is
+     no bundler here and the page has to keep working as plain files on Pages,
+     so the module graph is declared rather than compiled. -->
+<script type="importmap">
+{
+  "imports": {
+    "spessasynth_lib": "./vendor/spessasynth_lib.js",
+    "spessasynth_core": "./vendor/spessasynth_core.js"
+  }
+}
+</script>
 </head>
 <body>
 <div class="wrap">
@@ -195,6 +206,10 @@
         <input type="number" id="channel" min="1" max="16" step="1" value="1" style="width:70px">
       </div>
       <div class="field">
+        <label for="drumKit">GM drum kit</label>
+        <select id="drumKit" disabled><option value="">—</option></select>
+      </div>
+      <div class="field">
         <label for="lock">Lock (hold steady)</label>
         <input type="text" id="lock" placeholder="e.g. kick" size="12">
       </div>
@@ -250,15 +265,26 @@ import {
 } from '../src/pads.mjs';
 import { GM_KIT, GM_VOICES, GM_CHANNEL, gmName } from '../src/gm.mjs';
 import { createSynthOutput } from '../src/synth.mjs';
+import { GM_DRUM_KITS } from '../src/soundfont.mjs';
 
 const $ = (id) => document.getElementById(id);
 const statusEl = $('status');
 let access = null, output = null, playing = false, sysexOK = false, recording = false, legacyMidi = false;
 let audioContext = null, ticker = null, synth = null;
 
-// The built-in synth appears in the port list as though it were a port, since
-// as far as everything downstream is concerned it is one.
+// Both software outputs appear in the port list as though they were ports,
+// since as far as everything downstream is concerned they are.
 const SYNTH_ID = '__synth__';
+const SOUNDFONT_ID = '__soundfont__';
+
+const SOUNDFONT = {
+  url: './soundfonts/GeneralUser-GS.sf2',
+  worklet: './vendor/spessasynth_processor.min.js',
+  label: 'SoundFont — GeneralUser GS',
+};
+
+let soundfont = null;         // the loaded output, once someone asks for it
+let soundfontLoading = null;  // in-flight load, so two clicks fetch 32MB once
 
 function setStatus(msg, kind = '') { statusEl.textContent = msg; statusEl.className = kind; }
 
@@ -316,7 +342,53 @@ function openPort(id) {
   // draining a queue from a timer would be strictly worse than what the synth
   // already does. Null until the AudioContext is up — see ensureOutput.
   if (id === SYNTH_ID) return synth;
+  if (id === SOUNDFONT_ID) return soundfont?.output ?? null;
   return wrapOutput(findPort(getOutputs(access), id), { legacy: useSoftwareTiming(), ticker });
+}
+
+/** True for the two outputs that make sound here rather than sending it. */
+const isSoftwareOutput = (id = $('port').value) => id === SYNTH_ID || id === SOUNDFONT_ID;
+
+/**
+ * Loads the sound bank, once.
+ *
+ * 32MB, so it is fetched when chosen rather than at page load — the built-in
+ * synth is there to make the page instant, and paying a download for someone
+ * who only wanted to look at the grid would be a poor trade. The browser caches
+ * it, so choosing it again later costs nothing.
+ */
+async function ensureSoundfont() {
+  if (soundfont) return soundfont;
+  if (soundfontLoading) return soundfontLoading;
+
+  soundfontLoading = (async () => {
+    await ensureTicker();
+    if (!audioContext) throw new Error('no Web Audio — nothing to play through');
+
+    const { loadSoundfontOutput } = await import('./soundfont-engine.mjs');
+    setStatus('loading GeneralUser GS…', '');
+
+    soundfont = await loadSoundfontOutput(audioContext, {
+      soundfontUrl: SOUNDFONT.url,
+      workletUrl: SOUNDFONT.worklet,
+      name: SOUNDFONT.label,
+      onProgress: (loaded, total) => {
+        if (playing || recording) return;
+        setStatus(`loading GeneralUser GS… ${Math.round((loaded / total) * 100)}%`, '');
+      },
+    });
+    fillDrumKits(soundfont.kits);
+    return soundfont;
+  })();
+
+  try {
+    return await soundfontLoading;
+  } catch (e) {
+    setStatus(`soundfont failed to load: ${e.message}`, 'bad');
+    throw e;
+  } finally {
+    soundfontLoading = null;
+  }
 }
 
 /**
@@ -327,7 +399,15 @@ function openPort(id) {
  * rather than at load.
  */
 async function ensureOutput() {
-  if ($('port').value !== SYNTH_ID) return output;
+  const id = $('port').value;
+  if (!isSoftwareOutput(id)) return output;
+
+  if (id === SOUNDFONT_ID) {
+    try { output = (await ensureSoundfont()).output; } catch { return null; }
+    sendDrumKit();                       // the bank starts on kit 0
+    return output;
+  }
+
   if (!synth) {
     await ensureTicker();
     if (!audioContext) {
@@ -345,9 +425,11 @@ const isSynth = () => output != null && output === synth;
 /** What the output is and how it is being timed, for the status line. */
 function outputLabel() {
   if (!output) {
-    return $('port').value === SYNTH_ID ? 'built-in synth — press Play to start audio' : 'idle';
+    if ($('port').value === SYNTH_ID) return 'built-in synth — press Play to start audio';
+    if ($('port').value === SOUNDFONT_ID) return 'soundfont — press Play to load it (32MB)';
+    return 'idle';
   }
-  const timing = isSynth() ? output.kind
+  const timing = isSoftwareOutput() ? output.kind
     : useSoftwareTiming() ? (ticker?.kind ?? 'timer')
     : 'midi timing';
   return `connected: ${output.name} · ${timing}`;
@@ -355,7 +437,7 @@ function outputLabel() {
 
 function reportOutput() {
   if (playing || recording) return;
-  setStatus(outputLabel(), (output || $('port').value === SYNTH_ID) ? 'ok' : '');
+  setStatus(outputLabel(), (output || isSoftwareOutput()) ? 'ok' : '');
 }
 
 /**
@@ -393,10 +475,14 @@ function refreshPorts() {
     opt.value = String(out.id); opt.textContent = out.name ?? String(out.id);
     sel.appendChild(opt);
   }
-  const synthOpt = document.createElement('option');
-  synthOpt.value = SYNTH_ID;
-  synthOpt.textContent = 'Built-in synth \u2014 General MIDI';
-  sel.appendChild(synthOpt);
+  for (const [value, text] of [
+    [SYNTH_ID, 'Built-in synth \u2014 General MIDI'],
+    [SOUNDFONT_ID, `${SOUNDFONT.label} (32MB download)`],
+  ]) {
+    const opt = document.createElement('option');
+    opt.value = value; opt.textContent = text;
+    sel.appendChild(opt);
+  }
 
   // Ports are re-enumerated whenever anything is plugged or unplugged, so a
   // choice already made has to survive it \u2014 otherwise selecting the synth on a
@@ -439,10 +525,10 @@ function refreshPorts() {
  */
 function selectOutput() {
   output = openPort($('port').value);
-  $('record').disabled = $('port').value === SYNTH_ID;   // nothing to record into
+  $('record').disabled = isSoftwareOutput();   // nothing to record into
 
   if (!kitTouched) {
-    const isMpc = $('port').value !== SYNTH_ID && /mpc/i.test(output?.name ?? '');
+    const isMpc = !isSoftwareOutput() && /mpc/i.test(output?.name ?? '');
     const preset = isMpc ? 'full' : 'gm';
     if ($('kitPreset').value !== preset) {
       $('kitPreset').value = preset;
@@ -450,10 +536,66 @@ function selectOutput() {
       refresh();
     }
   }
+
+  // After the kit, not before: whether a kit can be chosen depends on which one
+  // is in force, and the line above may have just changed it.
+  syncDrumKitField();
   reportOutput();
 }
 
 $('port').addEventListener('change', selectOutput);
+
+// ------------------------------------------------------------- GM drum kits
+
+/**
+ * The kit list, from the bank itself where there is one.
+ *
+ * GeneralUser GS carries thirteen, not the nine GM names, so asking the file
+ * beats assuming — and a different bank dropped in later describes itself
+ * without any change here.
+ */
+function fillDrumKits(kits = GM_DRUM_KITS) {
+  const sel = $('drumKit');
+  const chosen = sel.value;
+  sel.innerHTML = '';
+  for (const kit of kits) {
+    const opt = document.createElement('option');
+    opt.value = String(kit.program);
+    opt.textContent = `${kit.program} · ${kit.name}`;
+    sel.appendChild(opt);
+  }
+  if ([...sel.options].some((o) => o.value === chosen)) sel.value = chosen;
+}
+
+/**
+ * Which output can change kit.
+ *
+ * The soundfont and an external GM module both respond to the same program
+ * change on the percussion channel, so the selector is not specific to either.
+ * It stays off for the built-in synth, which has one kit, and off for a pad
+ * map — an MPC receiving a program change would switch program, which is
+ * emphatically not what someone picking a *General MIDI* kit asked for.
+ */
+function syncDrumKitField() {
+  const usable = $('port').value === SOUNDFONT_ID
+    || ($('port').value !== SYNTH_ID && $('kitPreset').value === 'gm');
+  $('drumKit').disabled = !usable;
+  if (usable && !$('drumKit').options.length) fillDrumKits();
+}
+
+/** Selects the kit, as a plain program change on the percussion channel. */
+function sendDrumKit() {
+  const program = Number($('drumKit').value);
+  if (!output || $('drumKit').disabled || !Number.isFinite(program)) return;
+  output.send([0xc0 | (currentChannel() - 1), program]);
+}
+
+$('drumKit').addEventListener('change', async () => {
+  await ensureOutput();
+  sendDrumKit();
+  const name = $('drumKit').selectedOptions[0]?.textContent ?? '';
+  if (!playing && !recording) setStatus(`drum kit: ${name}`, 'ok');
+});
 
 // ------------------------------------------------------------- build pattern
 
@@ -803,6 +945,7 @@ async function play() {
   // one. A MIDI port is already open and this resolves immediately.
   await ensureOutput();
   if (!output) return;
+  sendDrumKit();               // a device may have been switched since last time
   transport = buildTransport();
   if (!transport.play()) return;
   playing = true;
@@ -877,10 +1020,10 @@ async function measure() {
   const inputs = access ? listPorts(getInputs(access)) : [];
   const input = inputs.find((p) => /mpc/i.test(p.name ?? '')) ?? inputs[0] ?? null;
 
-  // The synth has no echo path to measure — it *is* the audio clock, so the
-  // answer would be "zero" by construction rather than by measurement.
-  if (isSynth()) {
-    setStatus('nothing to measure: the built-in synth schedules on the audio clock itself', '');
+  // Neither software output has an echo path to measure — both *are* the audio
+  // clock, so the answer would be "zero" by construction, not by measurement.
+  if (isSoftwareOutput()) {
+    setStatus(`nothing to measure: ${output.name} schedules on the audio clock itself`, '');
     return;
   }
 
@@ -977,6 +1120,7 @@ $('timing').addEventListener('change', () => {
 $('kitPreset').addEventListener('change', () => {
   kitTouched = true;                         // stop following the output
   syncKitFields();
+  syncDrumKitField();
   refresh();
 });
 $('kitSpec').addEventListener('input', refresh);

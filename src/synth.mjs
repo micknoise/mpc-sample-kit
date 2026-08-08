@@ -19,6 +19,8 @@
 // the whole thing stays a static page. They are recognisably the GM
 // instruments, not replacements for the MPC's samples.
 
+import { contextTimeFor } from './audioclock.mjs';
+
 /** Ratios of a classic six-oscillator metallic tone, used for hats and cymbals. */
 const METAL_RATIOS = [2, 3, 4.16, 5.43, 6.79, 8.21];
 
@@ -302,27 +304,9 @@ export function createSynthOutput(context, opts = {}) {
 
   // --------------------------------------------------------------- scheduling
 
-  /**
-   * Converts a performance.now() timestamp — what Web MIDI's send() takes, and
-   * therefore what the transport hands us — into an AudioContext time.
-   *
-   * getOutputTimestamp pairs the two clocks at the same instant, which also
-   * accounts for the device's output latency: schedule against that pairing and
-   * the note is *audible* when asked for, not merely queued then. Where it is
-   * missing, sampling both clocks together is close enough — the error is a
-   * render quantum, a couple of milliseconds.
-   */
-  function audioTime(at) {
-    if (at == null) return context.currentTime;
-    let target;
-    const stamp = context.getOutputTimestamp?.();
-    if (stamp && stamp.performanceTime > 0 && stamp.contextTime > 0) {
-      target = stamp.contextTime + (at - stamp.performanceTime) / 1000;
-    } else {
-      target = context.currentTime + (at - now()) / 1000;
-    }
-    return Math.max(context.currentTime, target);
-  }
+  // performance.now() -> AudioContext time. Shared with the soundfont output,
+  // which has exactly the same problem.
+  const audioTime = (at) => contextTimeFor(context, at, now);
 
   function play(note, velocity, at) {
     const amp = (Math.min(127, Math.max(1, velocity)) / 127) ** 1.6;
