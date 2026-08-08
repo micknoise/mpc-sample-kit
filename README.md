@@ -351,11 +351,24 @@ Web MIDI, citing fingerprinting, and every iOS browser is forced onto WebKit, so
 Chrome and Edge on iOS inherit the gap.
 
 The route that does work is a third-party browser that bundles its own MIDI
-plumbing — [Web MIDI Browser](https://apps.apple.com/us/app/web-midi-browser/id953846217)
-or MIDIWeb Browser. Open the GitHub Pages URL in one of those and it drives the
-MPC over USB-C or Bluetooth MIDI like any other class-compliant device. An
-iPhone 15 or later can host USB MIDI directly, and the MPC runs on its own
-battery so it does not need bus power.
+plumbing. Open the GitHub Pages URL in one of those and it drives the MPC over
+USB-C or Bluetooth MIDI like any other class-compliant device. An iPhone 15 or
+later can host USB MIDI directly, and the MPC runs on its own battery so it does
+not need bus power.
+
+**Use [MIDIWeb Browser](https://apps.apple.com/us/app/midiweb-browser/id6757226617).**
+The choice of app turns out to matter far more than anything in this code:
+
+| Browser | Timing jitter |
+|---|---|
+| MIDIWeb Browser | **under 5ms** |
+| Web MIDI Browser | 11ms mean, 30ms worst |
+| *(laptop via CoreMIDI, for reference)* | *0.6ms sd* |
+
+Same page, same phone, same MPC — only the app changed. The difference is in
+each app's JavaScript-to-native bridge, which no amount of scheduling work on
+this side can influence. Measure it yourself with the **Measure timing** button
+rather than trusting either number.
 
 Those browsers implement an older draft of the API, so
 [`src/webmidi.mjs`](src/webmidi.mjs) normalises the differences:

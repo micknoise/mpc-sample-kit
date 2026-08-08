@@ -97,6 +97,31 @@ Confine all writes to `MPC-Sample/Projects` and `MPC-Sample/Samples/User`.
 MPC projects are a `.xpj` project file plus a matching `[ProjectData]` folder;
 **both** are required for a project to reopen. Programs are `.xpm`.
 
+## Timing, measured
+
+Established with the **Measure timing** button, which sends a burst at exact
+intervals and times the MPC's echo, so the figure covers the whole chain.
+
+| Path | Result |
+|---|---|
+| Laptop, `mpcmidi` via CoreMIDI | 0.6ms sd — the noise floor |
+| iPhone, MIDIWeb Browser | under 5ms |
+| iPhone, Web MIDI Browser | 10.9ms mean, 30ms worst |
+| iPhone, Web MIDI Browser, native timestamps | 36ms mean, 79ms worst |
+
+The laptop baseline matters most: it proves the MPC's soft-thru and the USB link
+contribute almost nothing, so any jitter above that is the sender's.
+
+What did **not** move the Web MIDI Browser figure: a larger look-ahead, caching
+bar generation off the main thread, or driving dispatch from an AudioWorklet at
+2.7ms. That last one is conclusive — a punctual wake-up producing an unchanged
+mean means scheduling was never the bottleneck. The cost is downstream of
+`send()`, in the app's JavaScript-to-native bridge, and is not reachable from
+JavaScript.
+
+Switching app fixed it. Worth reaching for a measurement early next time rather
+than optimising against a guess.
+
 ## Constraints that shape the design
 
 - Max 128 samples per project, one sample per pad.
