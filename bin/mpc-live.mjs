@@ -14,6 +14,7 @@
 //   fill           fill on the next bar
 //   voice 0.5      how often an alternate voice (rim, clap) is substituted
 //   decol 0.8      how often kick/snare collisions on the beat are broken up
+//   shape descend  fill vocabulary: descend, linear, triplet, herta, sparse, roll, auto
 //   seed 42        reseed the variation stream
 //   ?              show current state
 //   quit           stop cleanly
@@ -43,7 +44,7 @@ const USAGE = `usage: mpc-live [pattern.json] [options]
   --bpm N            tempo
   --drift F          0-1, how far variations stray (default 0.3)
   --fill-every N     fill on every Nth bar, 0 to disable (default 4)
-  --lock a,b         tracks held steady (default kick)
+  --lock a,b         tracks held steady (default none)
   --dynamics D       0-1, how much metre shapes volume (default 0.45)
   --conformity C     0-1, proportion of hits following the metre (default 0.8)
   --kit FILE         role->pad map
@@ -52,7 +53,7 @@ const USAGE = `usage: mpc-live [pattern.json] [options]
   --port NAME        MIDI destination (default "MPC Sample")`;
 
 function parseArgs(argv) {
-  const o = { port: 'MPC Sample', drift: 0.3, fillEvery: 4, lock: ['kick'], seed: 1, lookahead: 2000 };
+  const o = { port: 'MPC Sample', drift: 0.3, fillEvery: 4, lock: [], seed: 1, lookahead: 2000 };
   const rest = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -68,6 +69,7 @@ function parseArgs(argv) {
     else if (a === '--seed') o.seed = Number(argv[++i]);
     else if (a === '--voice-spread') o.voiceSpread = Number(argv[++i]);
     else if (a === '--decollide') o.decollide = Number(argv[++i]);
+    else if (a === '--fill-shape') o.fillShape = argv[++i];
     else if (a === '--lookahead') o.lookahead = Number(argv[++i]);
     else if (a === '-h' || a === '--help') o.help = true;
     else if (a.startsWith('--')) throw new Error(`unknown option ${a}`);
@@ -103,6 +105,7 @@ const state = {
   seed: o.seed,
   voiceSpread: o.voiceSpread ?? 0.35,
   decollide: o.decollide ?? 0.6,
+  fillShape: o.fillShape ?? 'auto',
   forceFill: false,
   bar: 0,
 };
@@ -125,6 +128,8 @@ function nextBar() {
     drift, fillEvery, lock, seed,
     forceFill: state.forceFill,
     decollideStrength: state.decollide,
+    fillShape: state.fillShape,
+    kit: spec.kit,
   });
   state.forceFill = false;
 
@@ -165,7 +170,7 @@ function showState() {
     `\n  bpm ${state.base.bpm}  drift ${state.drift}  fill every ${state.fillEvery}  ` +
     `dyn ${state.base.dynamics.depth}/${state.base.dynamics.conformity}  ` +
     `lock [${state.lock.join(',') || 'none'}]  voice ${state.voiceSpread}  ` +
-    `decol ${state.decollide}  seed ${state.seed}  bar ${state.bar}`,
+    `decol ${state.decollide}  fill ${state.fillShape}  seed ${state.seed}  bar ${state.bar}`,
   );
 }
 
@@ -190,11 +195,12 @@ rl.on('line', (line) => {
       case 'seed': state.seed = n; break;
       case 'voice': state.voiceSpread = n; break;
       case 'decol': state.decollide = n; break;
+      case 'shape': state.fillShape = arg || 'auto'; break;
       case 'fill': state.forceFill = true; break;
       case 'lock': state.lock = arg === 'none' || !arg ? [] : arg.split(','); break;
       case '?': showState(); break;
       case 'quit': case 'q': shutdown(); return;
-      default: console.log(`unknown command "${cmd}" — try: drift, bpm, dyn, conf, lock, fill, voice, decol, seed, ?, quit`);
+      default: console.log(`unknown command "${cmd}" — try: drift, bpm, dyn, conf, lock, fill, shape, voice, decol, seed, ?, quit`);
     }
     if (cmd && cmd !== '?' && cmd !== 'quit') showState();
   } catch (e) {

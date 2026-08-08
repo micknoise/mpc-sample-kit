@@ -16,7 +16,7 @@ import { dirname, resolve } from 'node:path';
 import { pattern, patternMs } from '../src/pattern.mjs';
 import { render, toMpcmidi } from '../src/schedule.mjs';
 import { style, styleNames, euclidTrack } from '../src/generate.mjs';
-import { ratchetPattern, decollide } from '../src/transform.mjs';
+import { ratchetPattern, decollide, dodgeLastBeat } from '../src/transform.mjs';
 import { arrange, arrangementMs, evolve } from '../src/arrange.mjs';
 import { withClock } from '../src/clock.mjs';
 import { DEFAULT_KIT } from '../src/pads.mjs';
@@ -48,6 +48,8 @@ voicing
                        Quieter hits substitute more often.
   --decollide S        0-1, how often a kick and snare landing on the same beat
                        is broken up by nudging the snare (default 0.6)
+  --dodge-four S       0-1, how often a kick squarely on beat 4 is moved to the
+                       "and" of 4 (default 0.85). Four-on-the-floor is exempt.
 
 kit and sync
   --kit FILE|SPEC      role->pad map, a .json file or "kick=1,snare=4,hat=9"
@@ -57,7 +59,8 @@ arrangement
   --bars N             evolve into an N-bar phrase instead of looping
   --drift F            0-1, how far variations stray (default 0.25)
   --fill-every N       fill on every Nth bar, 0 to disable (default 4)
-  --lock a,b           tracks to hold steady while others vary (default kick)
+  --fill-shape NAME    descend, linear, triplet, herta, sparse, roll, or auto
+  --lock a,b           tracks to hold steady while others vary (default none)
   --repeats N          plain loop count when --bars is not used
 
   --seed N             seed for all randomness
@@ -83,6 +86,8 @@ function parseArgs(argv) {
       case '--dynamics': o.dynamics = num(argv[++i], a); break;
       case '--voice-spread': o.voiceSpread = num(argv[++i], a); break;
       case '--decollide': o.decollide = num(argv[++i], a); break;
+      case '--fill-shape': o.fillShape = argv[++i]; break;
+      case '--dodge-four': o.dodgeFour = num(argv[++i], a); break;
       case '--conformity': o.conformity = num(argv[++i], a); break;
       case '--style': o.style = argv[++i]; break;
       case '--euclid': o.euclid = argv[++i]; break;
@@ -182,8 +187,11 @@ try {
       bars: o.bars,
       drift: o.drift ?? 0.25,
       fillEvery: o.fillEvery ?? 4,
-      lock: o.lock ?? ['kick'],
+      lock: o.lock ?? [],
       decollideStrength,
+      fillShape: o.fillShape ?? 'auto',
+      dodgeFour: o.dodgeFour ?? 0.85,
+      kit: spec.kit,
       seed,
     });
     events = arrange(sections, renderOpts);
@@ -191,7 +199,11 @@ try {
     label = `${o.bars} bars evolving (drift ${o.drift ?? 0.25}, fill every ${o.fillEvery ?? 4})`;
   } else {
     const repeats = o.repeats ?? spec.repeats ?? 1;
-    events = render(decollide(p, { strength: decollideStrength, seed }), { ...renderOpts, repeats });
+    const shaped = decollide(
+      dodgeLastBeat(p, { strength: o.dodgeFour ?? 0.85, seed }),
+      { strength: decollideStrength, seed },
+    );
+    events = render(shaped, { ...renderOpts, repeats });
     totalMs = patternMs(p) * repeats;
     label = `${repeats}x loop`;
   }

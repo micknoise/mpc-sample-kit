@@ -5,8 +5,10 @@ import assert from 'node:assert/strict';
 import { euclid, euclidTrack, randomTrack, rng, style, styleNames } from '../src/generate.mjs';
 import { pattern, parseSteps, stepMs, patternMs } from '../src/pattern.mjs';
 import { render } from '../src/schedule.mjs';
-import { rotate, thin, densify, upsample, ratchetPattern, decollide } from '../src/transform.mjs';
-import { arrange, arrangementMs, evolve, chain } from '../src/arrange.mjs';
+import {
+  rotate, thin, densify, upsample, ratchetPattern, decollide, dodgeLastBeat, fill, FILL_SHAPES,
+} from '../src/transform.mjs';
+import { arrange, arrangementMs, evolve, chain, barPattern } from '../src/arrange.mjs';
 import { padToNote, noteToPad, resolveNote, resolveVoices } from '../src/pads.mjs';
 import { metricWeight, effectiveWeight, applyWeight } from '../src/dynamics.mjs';
 import { clockEvents, withClock, CLOCK, START, STOP } from '../src/clock.mjs';
@@ -311,6 +313,244 @@ test('every style produces a renderable pattern', () => {
     for (const e of ev) {
       assert.ok(e.bytes[1] >= 36 && e.bytes[1] <= 51, `${name}: note ${e.bytes[1]} outside bank A`);
     }
+  }
+});
+
+test('fills reach voices the pattern does not contain', () => {
+  // The point of the rewrite: a kick/snare/hat pattern must still produce tom
+  // fills, which is impossible if the fill only transforms existing tracks.
+  const base = pattern({ bpm: 90, tracks: { kick: 'x...x...', snare: '....x...', hat: 'oooooooo' } });
+  assert.ok(!('tomLow' in base.tracks), 'precondition: no toms in the groove');
+
+  const f = fill(base, { shape: 'descend', intensity: 0.9, seed: 5 });
+  const sounding = Object.entries(f.tracks).filter(([, s]) => s.some(Boolean)).map(([n]) => n);
+  assert.ok(sounding.some((n) => n.startsWith('tom')), `no toms used: ${sounding}`);
+});
+
+test('every fill shape spreads across at least three voices', () => {
+  const base = pattern({ bpm: 90, tracks: { kick: 'x...x...', snare: '....x...', hat: 'oooooooo' } });
+  for (const shape of FILL_SHAPES) {
+    const f = fill(base, { shape, intensity: 0.75, seed: 3 });
+    const sounding = Object.entries(f.tracks).filter(([, s]) => s.some(Boolean)).map(([n]) => n);
+    assert.ok(sounding.length >= 3, `${shape} used only ${sounding.join(',')}`);
+    assert.equal(f.fillShape, shape);
+  }
+});
+
+test('fills are not snare-dominated', () => {
+  const base = pattern({ bpm: 90, tracks: { kick: 'x...x...x...x...', snare: '....x.......x...', hat: 'oooooooooooooooo' } });
+  for (const shape of FILL_SHAPES) {
+    const f = fill(base, { shape, intensity: 0.8, seed: 9 });
+    const counts = Object.fromEntries(
+      Object.entries(f.tracks).map(([n, s]) => [n, s.filter(Boolean).length]),
+    );
+    const total = Object.values(counts).reduce((a, b) => a + b, 0);
+    assert.ok(
+      (counts.snare ?? 0) / total <= 0.7,
+      `${shape}: snare is ${counts.snare}/${total} of the fill`,
+    );
+  }
+});
+
+test('fills involve the kick', () => {
+  const base = pattern({ bpm: 90, tracks: { kick: 'x...x...x...x...', snare: '....x.......x...' } });
+  for (const shape of FILL_SHAPES) {
+    const f = fill(base, { shape, intensity: 0.8, seed: 4 });
+    assert.ok(f.tracks.kick.some(Boolean), `${shape} dropped the kick entirely`);
+  }
+});
+
+test('a linear fill never sounds two voices at once', () => {
+  const base = pattern({ bpm: 90, tracks: { kick: 'x...x...x...x...', snare: '....x.......x...' } });
+  const f = fill(base, { shape: 'linear', intensity: 1, seed: 6 });
+  const names = Object.keys(f.tracks);
+  for (let i = 0; i < f.length; i++) {
+    const hits = names.filter((n) => f.tracks[n][i]).length;
+    assert.ok(hits <= 1, `step ${i} sounds ${hits} voices — linear means one at a time`);
+  }
+});
+
+test('fills crescendo', () => {
+  const base = pattern({ bpm: 90, tracks: { kick: 'x...x...x...x...', snare: '....x.......x...' } });
+  const f = fill(base, { shape: 'descend', intensity: 1, seed: 2 });
+  const loudest = (range) => Math.max(...Object.values(f.tracks)
+    .flatMap((s) => s.slice(...range).filter(Boolean)), 0);
+  assert.ok(loudest([12, 16]) > loudest([0, 4]), 'the end should be louder than the start');
+});
+
+test('fill intensity controls how much of the bar it takes', () => {
+  const base = pattern({ bpm: 90, tracks: { kick: 'x...x...x...x...', snare: '....x.......x...' } });
+  const span = (intensity) => {
+    const f = fill(base, { shape: 'roll', intensity, seed: 1 });
+    const hits = f.tracks.snare.flatMap((v, i) => (v ? [i] : []));
+    return hits.length ? f.length - Math.min(...hits) : 0;
+  };
+  assert.ok(span(0.9) > span(0.2), 'a heavier fill starts earlier');
+});
+
+test('fills are deterministic and shape selection responds to the seed', () => {
+  const base = pattern({ bpm: 90, tracks: { kick: 'x...x...', snare: '....x...' } });
+  assert.deepEqual(
+    fill(base, { seed: 12 }).tracks, fill(base, { seed: 12 }).tracks,
+    'same seed, same fill',
+  );
+  const shapes = new Set(Array.from({ length: 24 }, (_, i) => fill(base, { seed: i }).fillShape));
+  assert.ok(shapes.size >= 3, `auto should vary the vocabulary, saw ${[...shapes].join(',')}`);
+});
+
+test('fills degrade gracefully on a kit with no toms', () => {
+  const bare = { kick: 1, snare: 2, hat: 5 };
+  const base = pattern({ bpm: 90, tracks: { kick: 'x...x...', snare: '....x...' } });
+  for (const shape of FILL_SHAPES) {
+    const f = fill(base, { shape, intensity: 0.8, seed: 7, kit: bare });
+    const used = Object.entries(f.tracks).filter(([, s]) => s.some(Boolean)).map(([n]) => n);
+    assert.ok(used.every((n) => n in bare), `${shape} reached outside the kit: ${used}`);
+    assert.ok(used.length >= 2, `${shape} produced almost nothing`);
+  }
+});
+
+test('the bar after a fill lands on a crash', () => {
+  const base = pattern({ bpm: 90, tracks: { kick: 'x...x...', snare: '....x...' } });
+  const after = barPattern(base, 4, { fillEvery: 4, seed: 1 });   // bar 3 was the fill
+  assert.ok(after.tracks.crash?.[0] > 0, 'crash on the downbeat after a fill');
+
+  const ordinary = barPattern(base, 5, { fillEvery: 4, seed: 1 });
+  assert.ok(!ordinary.tracks.crash?.[0], 'no crash on an ordinary bar');
+});
+
+test('jazz keeps the kick off every beat', () => {
+  const p = pattern(style('jazz'));
+  const kickHits = p.tracks.kick.flatMap((v, i) => (v ? [i] : []));
+  const onEveryBeat = [0, 4, 8, 12].every((i) => p.tracks.kick[i]);
+  assert.ok(!onEveryBeat, 'a jazz kick on all four is out of the norm');
+  assert.ok(kickHits.length <= 4, 'the kick should stay sparse');
+  assert.ok(kickHits.some((i) => i % 4 !== 0), 'and catch a syncopation');
+});
+
+test('a syncopated kick is moved off beat 4', () => {
+  const p = pattern({ bpm: 88, tracks: { kick: 'x..o......o.x...' } });
+  assert.ok(p.tracks.kick[12], 'precondition: kick sits on beat 4');
+  const d = dodgeLastBeat(p, { strength: 1, seed: 1 });
+  assert.ok(!d.tracks.kick[12], 'beat 4 vacated');
+  assert.ok(d.tracks.kick[14], 'moved to the "and" of 4');
+  assert.equal(
+    d.tracks.kick.filter(Boolean).length, p.tracks.kick.filter(Boolean).length,
+    'the hit is moved, not deleted',
+  );
+});
+
+test('four-on-the-floor keeps its beat-4 kick', () => {
+  for (const name of ['techno', 'house']) {
+    const p = pattern(style(name));
+    const d = dodgeLastBeat(p, { strength: 1, seed: 1 });
+    assert.deepEqual(d.tracks.kick, p.tracks.kick, `${name} must keep all four`);
+  }
+});
+
+test('dodgeLastBeat is a no-op when the kick is already clear of beat 4', () => {
+  const p = pattern({ bpm: 88, tracks: { kick: 'x..o......o.....' } });
+  assert.equal(dodgeLastBeat(p, { strength: 1 }), p);
+});
+
+test('dodgeLastBeat at strength 0, or with no kick track, does nothing', () => {
+  const p = pattern({ bpm: 88, tracks: { kick: 'x...x...x..ox...' } });
+  assert.equal(dodgeLastBeat(p, { strength: 0 }), p);
+  const noKick = pattern({ bpm: 88, tracks: { snare: 'x...x...x...x...' } });
+  assert.equal(dodgeLastBeat(noKick, { strength: 1 }), noKick);
+});
+
+test('boom-bap ships without a kick on beat 4', () => {
+  const p = pattern(style('boom-bap'));
+  assert.ok(!p.tracks.kick[12], 'a beat-4 kick is lame, especially here');
+  assert.ok(p.tracks.kick[0], 'but beat 1 is still there');
+});
+
+test('no style except four-on-the-floor puts the kick on beat 4', () => {
+  for (const name of styleNames()) {
+    const p = pattern(style(name));
+    if (!p.tracks.kick) continue;
+    const spb = p.stepsPerBeat;
+    const onEveryBeat = [0, spb, 2 * spb, 3 * spb].every((i) => p.tracks.kick[i]);
+    if (onEveryBeat) continue;                       // deliberate, exempt
+    assert.ok(!p.tracks.kick[3 * spb], `${name} has a limp beat-4 kick`);
+  }
+});
+
+test('evolved bars stay clear of beat 4', () => {
+  const p = pattern(style('boom-bap'));
+  for (const s of evolve(p, { bars: 12, drift: 0.9, fillEvery: 0, lock: [], seed: 3 })) {
+    assert.ok(!s.pattern.tracks.kick[12], 'variation must not reintroduce it');
+  }
+});
+
+const longestRun = (steps) => {
+  let run = 0, worst = 0;
+  for (const v of steps) { run = v ? run + 1 : 0; worst = Math.max(worst, run); }
+  return worst;
+};
+
+test('no fill stays on one drum for more than three strikes', () => {
+  for (const styleName of ['boom-bap', 'techno', 'jazz', 'free-jazz', 'dnb']) {
+    const base = pattern(style(styleName));
+    for (const shape of FILL_SHAPES) {
+      for (let seed = 1; seed <= 20; seed++) {
+        for (const intensity of [0.2, 0.5, 0.8, 1]) {
+          const f = fill(base, { shape, seed, intensity });
+          for (const [name, steps] of Object.entries(f.tracks)) {
+            assert.ok(
+              longestRun(steps) <= 3,
+              `${styleName}/${shape} seed ${seed} i${intensity}: ${name} runs ${longestRun(steps)}`,
+            );
+          }
+        }
+      }
+    }
+  }
+});
+
+test('the run limit accounts for a groove run continuing into the fill', () => {
+  // Sixteenth snares right up to the fill entry: naively counting only inside
+  // the fill region would miss the overlap and allow a run of four.
+  const base = pattern({ bpm: 90, tracks: { kick: 'x...x...', snare: 'oooooooo' } });
+  const f = fill(base, { shape: 'roll', intensity: 0.5, seed: 3 });
+  assert.ok(longestRun(f.tracks.snare) <= 3, `snare runs ${longestRun(f.tracks.snare)}`);
+});
+
+test('consecutive fills in a phrase genuinely differ', () => {
+  const base = pattern(style('boom-bap'));
+  const fills = [3, 7, 11, 15, 19, 23, 27, 31]
+    .map((bar) => barPattern(base, bar, { fillEvery: 4, seed: 1, drift: 0.3 }));
+
+  assert.ok(new Set(fills.map((f) => f.fillShape)).size >= 4, 'shapes should vary');
+  assert.ok(new Set(fills.map((f) => f.fillAscending)).size === 2, 'direction should vary');
+
+  // No two fills should be byte-identical.
+  const signatures = fills.map((f) => JSON.stringify(f.tracks));
+  assert.equal(new Set(signatures).size, signatures.length, 'two fills came out identical');
+});
+
+test('fill run-limiting can be turned off', () => {
+  const base = pattern({ bpm: 90, tracks: { kick: 'x...x...x...x...', snare: '....x.......x...' } });
+  const f = fill(base, { shape: 'roll', intensity: 1, seed: 1, maxRun: 0 });
+  assert.ok(longestRun(f.tracks.snare) > 3, 'maxRun 0 leaves long runs intact');
+});
+
+test('the kick develops by default rather than being frozen', () => {
+  // Locking the kick by default meant it never moved however high the drift
+  // was pushed, which read as a bug: the pattern appeared not to respond.
+  const base = pattern(style('jazz'));
+  const kicks = new Set(
+    Array.from({ length: 8 }, (_, bar) =>
+      barPattern(base, bar, { drift: 0.6, fillEvery: 0, seed: 2 }).tracks.kick.join(',')),
+  );
+  assert.ok(kicks.size >= 4, `kick barely moved: ${kicks.size} distinct patterns in 8 bars`);
+});
+
+test('locking is still available and still absolute', () => {
+  const base = pattern(style('jazz'));
+  for (let bar = 0; bar < 8; bar++) {
+    const p = barPattern(base, bar, { drift: 1, fillEvery: 0, lock: ['kick'], seed: 2 });
+    assert.deepEqual(p.tracks.kick, base.tracks.kick, `bar ${bar} drifted despite the lock`);
   }
 });
 

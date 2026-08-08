@@ -123,11 +123,15 @@ hears the idea plainly first.
 node bin/mpc-seq.mjs --style techno --bars 16 --drift 0.4 --fill-every 4 --lock kick
 ```
 
+Nothing is locked by default. Locking the kick keeps a groove anchored at high
+drift, but it also stops the kick developing *at all* — which reads as the
+pattern ignoring the controls rather than as a deliberate choice.
+
 | Flag | Effect |
 |---|---|
 | `--drift` | 0–1, how far variations stray |
 | `--fill-every N` | fill on every Nth bar, 0 to disable |
-| `--lock a,b` | tracks held steady while others vary |
+| `--lock a,b` | tracks held steady while others vary (default none) |
 | `--ratchet P` | probability of a hit becoming a roll |
 | `--seed N` | seed for all randomness |
 
@@ -196,6 +200,45 @@ Alternates live in `DEFAULT_VOICES` in [`src/pads.mjs`](src/pads.mjs), and a kit
 entry may be an array (`"snare": [2, 9, 10]`) to set them explicitly. Roles
 whose alternates are missing from the kit fall back to the primary, so a custom
 kit never breaks playback.
+
+## Fills
+
+Fills are built across the kit rather than derived from the pattern's tracks.
+That distinction is the whole point: a groove usually has only kick, snare and
+hat, so anything that merely *transforms* those tracks can never reach a tom —
+which is why fills built that way always come out as snare busywork. Tom and
+crash voices are pulled from the kit and added as new tracks.
+
+| Shape | Character |
+|---|---|
+| `descend` | falls down the kit, snare into successively lower toms |
+| `linear` | one voice at a time, kick threaded through the toms |
+| `triplet` | three-step groupings, cutting against a 16th grid |
+| `herta` | four-note kick/snare/snare/tom cell, repeated |
+| `sparse` | a handful of loud, well-placed hits rather than a roll |
+| `roll` | dense crescendo on the snare, kick still marking the beats |
+
+```bash
+node bin/mpc-seq.mjs --style boom-bap --bars 16 --fill-shape descend
+node bin/mpc-seq.mjs --style boom-bap --bars 16          # auto varies the vocabulary
+```
+
+Three rules keep them from sounding mechanical:
+
+**Never more than three strikes on one drum.** Past that a fill stops being a
+fill and becomes a buzz. Overflow strikes are handed to whichever voice has been
+quiet longest, which both satisfies the limit and pushes the fill around the
+kit. The count carries over from the groove, since a run that starts before the
+fill is still a run to the listener.
+
+**Direction and span vary per fill.** Running *up* the kit into the snare feels
+like a question, running down feels like an answer; the entry point moves by up
+to half a beat. Without this, six shapes still shared a family resemblance
+because every fill occupied the same span and rose the same way.
+
+**Fills land somewhere.** A crash closes roughly half of them; otherwise the
+landing falls on the downbeat of the next bar. Never on a `linear` fill, where
+sounding two voices at once is exactly what the shape exists to avoid.
 
 ## Kits
 

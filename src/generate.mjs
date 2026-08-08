@@ -110,9 +110,12 @@ export const WEIGHTS = {
  * Each returns a full pattern spec ready for pattern().
  */
 export const STYLES = {
+  // The kick deliberately avoids beat 4 (step 12). Boom bap works by landing
+  // around it — here on the "a" of 1 and the "and" of 3 — which keeps the
+  // backbeat clear and pushes into the next bar.
   'boom-bap': () => ({
     bpm: 88, swing: 0.18, humanizeMs: 6, humanizeVel: 12,
-    tracks: { kick: 'x..o....|..x.o...', snare: '....x..s|....x.s.', hat: 'o.oo o.o.|o.oo o.o.' },
+    tracks: { kick: 'x..o..s...o.....', snare: '....x..s|....x.s.', hat: 'o.oo o.o.|o.oo o.o.' },
   }),
   techno: () => ({
     bpm: 132, swing: 0, humanizeMs: 1, humanizeVel: 4,
@@ -134,16 +137,21 @@ export const STYLES = {
     bpm: 108, swing: 0.12, humanizeMs: 8, humanizeVel: 14,
     tracks: { kick: 'x..x..x.|x..x..x.', rim: '..x..x..|..x..x..', shaker: 'o.o.o.o.|o.o.o.o.' },
   }),
-  // Swung ride with the classic skip note, hi-hat closing on 2 and 4, kick
-  // feathered underneath rather than driving, and a snare that comps against
-  // the ride instead of marking the backbeat.
+  // Swung ride with the classic skip note, hi-hat closing on 2 and 4, and a
+  // snare that comps against the ride rather than marking the backbeat.
+  //
+  // The kick stays out of the way, catching beat 1 and a syncopation. It is
+  // deliberately *not* on all four: feathering the bass drum is a real bebop
+  // technique, but it means a barely-audible cushion under the ride, and a
+  // sampler triggered at any usable velocity turns that into four-on-the-floor
+  // — which is the opposite of the intended effect.
   jazz: () => ({
     bpm: 132, swing: 0.33, humanizeMs: 12, humanizeVel: 18,
     dynamics: { depth: 0.5, conformity: 0.7 },
     tracks: {
       ride: 'x...o.o.x...o.o.',
       hat: '....o.......o...',
-      kick: 's...s...s...s...',
+      kick: 'x.........o.....',
       snare: '..s...x....s..o.',
     },
   }),
@@ -165,7 +173,7 @@ export const STYLES = {
 
   garage: () => ({
     bpm: 134, swing: 0.32, humanizeMs: 4, humanizeVel: 10,
-    tracks: { kick: 'x...........x...', snare: '....x.......x...', hat: 'o.oo.o.oo.o.o.o.' },
+    tracks: { kick: 'x.........x...o.', snare: '....x.......x...', hat: 'o.oo.o.oo.o.o.o.' },
   }),
 };
 

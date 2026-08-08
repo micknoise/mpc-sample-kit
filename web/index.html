@@ -54,6 +54,9 @@
     display: flex; align-items: flex-end; overflow: hidden;
   }
   .step.beat { outline: 1px solid var(--accent-dim); }
+  .grid.editable .step { cursor: pointer; }
+  .grid.editable .step:hover { background: var(--accent-dim); }
+  .grid.editable .step:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   .step i { display: block; width: 100%; background: var(--accent); }
   .scroll { overflow-x: auto; }
   code { background: var(--bg); padding: .1rem .3rem; border-radius: 3px; font-size: 12px; }
@@ -131,6 +134,14 @@
         <input type="number" id="fillEvery" min="0" max="16" step="1" value="4" style="width:70px">
       </div>
       <div class="field">
+        <label for="fillShape">Fill shape</label>
+        <select id="fillShape"></select>
+      </div>
+      <div class="field">
+        <label for="lock">Lock (hold steady)</label>
+        <input type="text" id="lock" placeholder="e.g. kick" size="12">
+      </div>
+      <div class="field">
         <label for="seed">Seed</label>
         <input type="number" id="seed" min="1" step="1" value="1" style="width:80px">
       </div>
@@ -142,9 +153,14 @@
       <button id="play">Play</button>
       <button id="stop" class="ghost" disabled>Stop</button>
       <button id="reseed" class="ghost">New seed</button>
+      <button id="resetGrid" class="ghost" disabled>Reset grid</button>
+      <label style="margin:0">bar
+        <input type="number" id="showBar" min="0" max="31" step="1" value="0" style="width:60px">
+      </label>
       <label style="margin:0"><input type="checkbox" id="sync"> send MIDI clock</label>
     </div>
     <div class="scroll"><div class="grid" id="grid"></div></div>
+    <p class="note" id="gridHint"></p>
     <p class="note">Plays continuously until you press Stop, looping the phrase while it
       varies. Bar 1 as written; later bars drift. Bar height shows the velocity that will
       actually sound — metric dynamics make heavy beats louder, with
@@ -153,10 +169,11 @@
 </div>
 
 <script type="module">
-import { pattern, patternMs } from '../src/pattern.mjs';
+import { pattern, patternMs, VELOCITY } from '../src/pattern.mjs';
 import { render } from '../src/schedule.mjs';
 import { style, styleNames, euclidTrack } from '../src/generate.mjs';
 import { barPattern } from '../src/arrange.mjs';
+import { FILL_SHAPES } from '../src/transform.mjs';
 import { clockEvents } from '../src/clock.mjs';
 import { createTransport } from '../src/transport.mjs';
 import { resolveNote, resolveVoices, DEFAULT_KIT } from '../src/pads.mjs';
@@ -225,10 +242,21 @@ function parseEuclid(spec) {
   return tracks;
 }
 
+// Hand edits to the seed pattern, keyed by track name. Cleared whenever the
+// underlying material changes, since edits to a boom-bap grid mean nothing once
+// the tracks have been replaced by a euclidean or a different style.
+let edits = null;
+
+function clearEdits() {
+  edits = null;
+  $('resetGrid').disabled = true;
+}
+
 function currentPattern() {
   const spec = style($('style').value);
   const eu = $('euclid').value.trim();
   if (eu) spec.tracks = parseEuclid(eu);
+  if (edits) spec.tracks = { ...spec.tracks, ...edits };
   spec.bpm = +$('bpm').value;
   spec.swing = +$('swing').value;
   spec.dynamics = {
@@ -244,9 +272,10 @@ function currentBar(p, n) {
   return barPattern(p, n % phrase, {
     drift: +$('drift').value,
     fillEvery: +$('fillEvery').value,
-    lock: ['kick'],
+    lock: $('lock').value.split(/[,\s]+/).filter(Boolean),
     seed: +$('seed').value,
     decollideStrength: +$('decollide').value,
+    fillShape: $('fillShape').value,
   });
 }
 
@@ -291,11 +320,39 @@ function shapedTracks(p, seed) {
   return out;
 }
 
-function drawGrid(p) {
+// Clicking a step cycles it through the written levels of the step notation.
+// Four states rather than a toggle, because accent and ghost carry most of a
+// groove's character — a grid that only does on/off cannot express a backbeat.
+const LEVELS = [0, VELOCITY.o, VELOCITY.x, VELOCITY.s];
+const LEVEL_NAME = { 0: 'rest', [VELOCITY.o]: 'normal', [VELOCITY.x]: 'accent', [VELOCITY.s]: 'ghost' };
+
+function cycleStep(name, i) {
+  const written = currentPattern().tracks;
+  const next = Object.fromEntries(Object.entries(written).map(([n, s]) => [n, [...s]]));
+
+  const at = LEVELS.indexOf(next[name][i]);
+  // A velocity that is not one of the four written levels — from a digit in a
+  // step string, say — is treated as "on", so the first click clears it.
+  next[name][i] = at === -1 ? 0 : LEVELS[(at + 1) % LEVELS.length];
+
+  edits = next;
+  $('resetGrid').disabled = false;
+  refresh();
+}
+
+/**
+ * @param {object}  p          pattern to display
+ * @param {boolean} editable   only the seed bar can be edited; later bars are
+ *                             generated, so there is nothing there to edit
+ */
+function drawGrid(p, editable) {
   const grid = $('grid');
   grid.innerHTML = '';
+  grid.classList.toggle('editable', editable);
+
   const cols = `repeat(${p.length}, minmax(14px, 1fr))`;
   const shaped = shapedTracks(p, +$('seed').value);
+
   for (const [name, steps] of Object.entries(shaped)) {
     const row = document.createElement('div');
     row.className = 'track';
@@ -303,17 +360,31 @@ function drawGrid(p) {
     label.className = 'track-name'; label.textContent = name;
     const cells = document.createElement('div');
     cells.className = 'steps'; cells.style.gridTemplateColumns = cols;
-    steps.forEach((v, i) => {
+
+    steps.forEach((sounding, i) => {
       const cell = document.createElement('div');
       cell.className = 'step' + (i % p.stepsPerBeat === 0 ? ' beat' : '');
-      if (v) {
+      const written = p.tracks[name][i];
+
+      if (sounding) {
         const bar = document.createElement('i');
-        bar.style.height = `${Math.round((v / 127) * 100)}%`;
+        bar.style.height = `${Math.round((sounding / 127) * 100)}%`;
         cell.appendChild(bar);
-        cell.title = `step ${i + 1} · velocity ${v}`;
+      }
+      cell.title = editable
+        ? `${name} step ${i + 1} · ${LEVEL_NAME[written] ?? written} · sounds at ${sounding || 0} · click to change`
+        : `${name} step ${i + 1} · sounds at ${sounding || 0}`;
+
+      if (editable) {
+        cell.tabIndex = 0;
+        cell.addEventListener('click', () => cycleStep(name, i));
+        cell.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); cycleStep(name, i); }
+        });
       }
       cells.appendChild(cell);
     });
+
     row.append(label, cells);
     grid.append(row);
   }
@@ -366,6 +437,12 @@ function stop() {
 
 // -------------------------------------------------------------------- wiring
 
+for (const name of ['auto', ...FILL_SHAPES]) {
+  const opt = document.createElement('option');
+  opt.value = name; opt.textContent = name;
+  $('fillShape').appendChild(opt);
+}
+
 for (const name of styleNames()) {
   const opt = document.createElement('option');
   opt.value = name; opt.textContent = name;
@@ -374,6 +451,7 @@ for (const name of styleNames()) {
 $('style').value = 'boom-bap';
 
 function syncFromStyle() {
+  clearEdits();
   const s = style($('style').value);
   $('bpm').value = s.bpm;
   $('swing').value = s.swing ?? 0;
@@ -391,16 +469,26 @@ function refresh() {
   $('driftv').textContent = (+$('drift').value).toFixed(2);
   $('syncPct').textContent = `${Math.round((1 - +$('conf').value) * 100)}%`;
   try {
-    drawGrid(currentBar(currentPattern(), 0));
+    // Bar 0 is the seed exactly as written, which is what makes it editable.
+    // Later bars have been varied, un-stacked and dodged, so a click there has
+    // no stable thing to edit.
+    const showBar = +$('showBar').value;
+    const seed = currentPattern();
+    drawGrid(showBar === 0 ? seed : currentBar(seed, showBar), showBar === 0);
+    $('gridHint').textContent = showBar === 0
+      ? 'Click a step to cycle rest \u2192 normal \u2192 accent \u2192 ghost.'
+      : `Bar ${showBar} is generated from the seed \u2014 view only.`;
     if (!playing) setStatus(output ? `connected: ${output.name}` : 'idle', output ? 'ok' : '');
   }
   catch (e) { setStatus(e.message, 'bad'); }
 }
 
 $('style').addEventListener('change', syncFromStyle);
-for (const id of ['bpm', 'swing', 'dyn', 'conf', 'phrase', 'drift', 'voice', 'decollide', 'fillEvery', 'seed', 'anchor', 'euclid']) {
+for (const id of ['bpm', 'swing', 'dyn', 'conf', 'phrase', 'drift', 'voice', 'decollide', 'fillEvery', 'fillShape', 'showBar', 'seed', 'lock', 'anchor', 'euclid']) {
   $(id).addEventListener('input', refresh);
 }
+$('euclid').addEventListener('change', clearEdits);
+$('resetGrid').addEventListener('click', () => { clearEdits(); refresh(); });
 $('play').addEventListener('click', play);
 $('stop').addEventListener('click', stop);
 $('reseed').addEventListener('click', () => {
