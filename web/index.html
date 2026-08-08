@@ -202,7 +202,9 @@ import { barPattern } from '../src/arrange.mjs';
 import { FILL_SHAPES } from '../src/transform.mjs';
 import { clockEvents, recordArming } from '../src/clock.mjs';
 import { createTransport } from '../src/transport.mjs';
-import { listPorts, findPort, wrapOutput, openAccess, describePorts } from '../src/webmidi.mjs';
+import {
+  listPorts, findPort, wrapOutput, openAccess, describePorts, getOutputs,
+} from '../src/webmidi.mjs';
 import { resolveNote, resolveVoices, noteToPad, DEFAULT_KIT } from '../src/pads.mjs';
 
 const $ = (id) => document.getElementById(id);
@@ -227,6 +229,15 @@ async function initMidi() {
       await openAccess((opts) => navigator.requestMIDIAccess(opts)));
     try { access.onstatechange = refreshPorts; } catch { /* not all shims have it */ }
     refreshPorts();
+
+    // Some implementations populate the port list a moment after access
+    // resolves, and not all of them fire statechange when they do. Chrome is
+    // ready immediately, so this costs it nothing: the loop exits on the first
+    // check. Without it a slow enumerator looks permanently empty.
+    for (let i = 0; i < 12 && !listPorts(getOutputs(access)).length; i++) {
+      await new Promise((r) => setTimeout(r, 250));
+      refreshPorts();
+    }
   } catch (e) {
     setStatus(`MIDI access denied: ${e.message}`, 'bad');
     $('play').disabled = true;
@@ -235,12 +246,12 @@ async function initMidi() {
 
 function refreshPorts() {
   const sel = $('port');
-  const outs = listPorts(access.outputs);
+  const outs = listPorts(getOutputs(access));
   sel.innerHTML = '';
   if (!outs.length) {
     sel.innerHTML = '<option>no outputs found</option>';
     setStatus(
-      `no MIDI outputs — is the MPC on USB MIDI, not disk mode? [${describePorts(access.outputs)}]`,
+      `no MIDI outputs — is the MPC on USB MIDI, not disk mode? [${describePorts(getOutputs(access))}]`,
       'bad',
     );
     $('play').disabled = true;
@@ -253,13 +264,13 @@ function refreshPorts() {
   }
   const mpc = outs.find((o) => /mpc/i.test(o.name ?? ''));
   sel.value = (mpc ?? outs[0]).id;
-  output = wrapOutput(findPort(access.outputs, sel.value), { legacy: legacyMidi });
+  output = wrapOutput(findPort(getOutputs(access), sel.value), { legacy: legacyMidi });
   $('play').disabled = false;
   setStatus(`connected: ${output.name}${legacyMidi ? ' (software timing)' : ''}`, 'ok');
 }
 
 $('port').addEventListener('change', (e) => {
-  output = wrapOutput(findPort(access.outputs, e.target.value), { legacy: legacyMidi });
+  output = wrapOutput(findPort(getOutputs(access), e.target.value), { legacy: legacyMidi });
   setStatus(`connected: ${output.name}${legacyMidi ? ' (software timing)' : ''}`, 'ok');
 });
 

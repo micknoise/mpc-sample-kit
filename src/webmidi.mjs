@@ -21,32 +21,130 @@
 const isPortLike = (p) =>
   p && typeof p === 'object' && ('id' in p || 'name' in p || typeof p.send === 'function');
 
-/** Normalises any of the shapes a port collection has historically taken. */
-export function listPorts(collection) {
-  if (!collection) return [];
+/**
+ * Unwraps a collection that is really a method.
+ *
+ * The 2012 draft exposed outputs as a *function* returning an array, not as a
+ * property. That form is easy to miss because a function has a `length` (its
+ * arity), so array-like handling silently yields nothing rather than failing.
+ */
+function unwrap(collection) {
+  if (typeof collection !== 'function') return collection;
+  try {
+    return collection.call(undefined) ?? null;
+  } catch {
+    return null;
+  }
+}
 
-  const candidates = [];
+/**
+ * Finds the outputs on a MIDIAccess regardless of how it exposes them.
+ *
+ * Current implementations use an `outputs` property. Older ones used an
+ * `outputs()` or `getOutputs()` method, and some early shims called them
+ * destinations.
+ */
+export function getOutputs(access) {
+  if (!access) return null;
 
-  // Maplike, as the current spec requires.
-  if (typeof collection.values === 'function') {
-    try {
-      const values = collection.values();
-      if (values && typeof values[Symbol.iterator] === 'function') candidates.push(...values);
-      else if (Array.isArray(values)) candidates.push(...values);   // older drafts
-    } catch {
-      // fall through to the shapes below
-    }
+  const keys = ['outputs', 'getOutputs', 'destinations'];
+
+  // Property forms first — a plain collection is unambiguous.
+  for (const key of keys) {
+    const value = access[key];
+    if (value != null && typeof value !== 'function') return value;
   }
 
-  if (!candidates.length && Array.isArray(collection)) candidates.push(...collection);
-  if (!candidates.length && typeof collection.length === 'number') candidates.push(...Array.from(collection));
-  if (!candidates.length && typeof collection === 'object') candidates.push(...Object.values(collection));
+  // Then method forms, calling on `access` so `this` is right.
+  for (const key of keys) {
+    const fn = access[key];
+    if (typeof fn !== 'function') continue;
+    try {
+      const result = fn.call(access);
+      if (result != null) return result;
+    } catch {
+      // try the next form
+    }
+  }
+  return null;
+}
+
+/**
+ * Empties anything iterator-shaped into an array.
+ *
+ * Handles three generations: a real iterable, a bare iterator with `next()` but
+ * no `Symbol.iterator` (how iteration was written before ES6 settled, and what
+ * at least one iOS Web MIDI implementation still returns), and a plain array.
+ *
+ * The cap exists because a hand-written iterator that never reports `done`
+ * would otherwise hang the page.
+ */
+function drain(it, limit = 4096) {
+  if (!it) return [];
+  if (typeof it[Symbol.iterator] === 'function') return [...it];
+  if (Array.isArray(it)) return it.slice();
+
+  if (typeof it.next === 'function') {
+    const out = [];
+    try {
+      for (let n = it.next(), i = 0; n && !n.done && i < limit; n = it.next(), i++) {
+        out.push(n.value);
+      }
+    } catch {
+      // return whatever was collected before it gave up
+    }
+    return out;
+  }
+  return [];
+}
+
+/** Normalises any of the shapes a port collection has historically taken. */
+export function listPorts(source) {
+  const collection = unwrap(source);
+  if (!collection || typeof collection !== 'object') return [];
+
+  let candidates = [];
+  const tryThis = (fn) => {
+    if (candidates.length) return;
+    try {
+      const got = fn();
+      if (got && got.length) candidates = got;
+    } catch {
+      // move on to the next strategy
+    }
+  };
+
+  // Maplike, current spec — but values() may hand back any of the shapes drain
+  // knows about, not necessarily an iterable.
+  tryThis(() => (typeof collection.values === 'function' ? drain(collection.values()) : []));
+
+  // forEach is implemented by most Maplike shims even when their iterators are
+  // idiosyncratic, so it is a good second bet.
+  tryThis(() => {
+    if (typeof collection.forEach !== 'function') return [];
+    const out = [];
+    collection.forEach((v) => out.push(v));
+    return out;
+  });
+
+  // entries() yields [id, port] pairs.
+  tryThis(() => (typeof collection.entries === 'function'
+    ? drain(collection.entries()).map((e) => (Array.isArray(e) ? e[1] : e))
+    : []));
+
+  // The collection itself may be directly iterable.
+  tryThis(() => drain(collection));
+
+  tryThis(() => (Array.isArray(collection) ? collection : []));
+  tryThis(() => (typeof collection.length === 'number' ? Array.from(collection) : []));
+  tryThis(() => Object.values(collection));
 
   return candidates.filter(isPortLike);
 }
 
 /** Looks a port up by id without assuming Map.get exists. */
-export function findPort(collection, id) {
+export function findPort(source, id) {
+  const collection = unwrap(source);
   if (!collection) return null;
   if (typeof collection.get === 'function') {
     const direct = collection.get(id);
@@ -62,8 +160,8 @@ export function findPort(collection, id) {
  * is unlikely to be honoured — see wrapOutput.
  */
 export function isLegacyAccess(access) {
-  const outputs = access?.outputs;
-  if (!outputs) return true;
+  const outputs = unwrap(getOutputs(access));
+  if (!outputs || typeof outputs !== 'object') return true;
 
   // An Array passes a naive Maplike check — it has a perfectly good values()
   // returning an iterator — so it has to be excluded explicitly. Requiring get()
@@ -124,19 +222,23 @@ export function wrapOutput(output, opts = {}) {
  * reporting — it says which shape the collection took, rather than leaving the
  * failure looking like a permissions problem.
  */
-export function describePorts(collection) {
-  if (!collection) return 'missing';
-  const kind = Array.isArray(collection) ? 'array'
+export function describePorts(source) {
+  const wasFunction = typeof source === 'function';
+  const collection = unwrap(source);
+  if (!collection) return wasFunction ? 'method returning nothing' : 'missing';
+  const kind = (wasFunction ? 'method -> ' : '') + (Array.isArray(collection) ? 'array'
     : typeof collection.get === 'function' ? 'maplike'
     : typeof collection.length === 'number' ? 'array-like'
-    : 'object';
+    : 'object');
   let valuesKind = 'none';
   if (typeof collection.values === 'function') {
     try {
       const v = collection.values();
       valuesKind = v == null ? 'returns null'
         : typeof v[Symbol.iterator] === 'function' ? 'iterable'
-        : Array.isArray(v) ? 'array' : typeof v;
+        : Array.isArray(v) ? 'array'
+        : typeof v.next === 'function' ? 'bare iterator'
+        : typeof v;
     } catch (e) {
       valuesKind = `throws ${e.constructor.name}`;
     }

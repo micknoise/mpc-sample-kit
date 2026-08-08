@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  listPorts, findPort, isLegacyAccess, wrapOutput, openAccess, describePorts,
+  listPorts, findPort, isLegacyAccess, wrapOutput, openAccess, describePorts, getOutputs,
 } from '../src/webmidi.mjs';
 
 const port = (id, name) => ({ id, name, send() {} });
@@ -130,6 +130,86 @@ test('describePorts reports the shape rather than guessing', () => {
   assert.match(describePorts({ values: () => undefined }), /values\(\) returns null.*0 found/);
   assert.match(describePorts({ values: () => { throw new TypeError('x'); } }), /throws TypeError/);
   assert.equal(describePorts(null), 'missing');
+});
+
+// A Maplike whose values() returns a bare iterator: next(), no Symbol.iterator.
+// This is what the iPhone implementation actually does — it reported
+// "maplike, values() object, 0 found".
+const asBareIterator = (ports) => ({
+  get: (id) => ports.find((p) => p.id === id) ?? undefined,
+  values() {
+    let i = 0;
+    return { next: () => (i < ports.length ? { value: ports[i++], done: false } : { done: true }) };
+  },
+});
+
+test('a Maplike whose values() is a bare iterator still yields ports', () => {
+  const ports = [port('a', 'MPC Sample'), port('b', 'Other')];
+  const outputs = asBareIterator(ports);
+  assert.deepEqual(listPorts(outputs).map((p) => p.name), ['MPC Sample', 'Other']);
+  assert.equal(findPort(outputs, 'b').name, 'Other');
+  assert.match(describePorts(outputs), /maplike, values\(\) bare iterator, 2 found/);
+});
+
+test('forEach is used when the iterators are unusable', () => {
+  const ports = [port('a', 'MPC Sample')];
+  const outputs = {
+    get: () => undefined,
+    values: () => ({}),                        // useless
+    forEach: (fn) => ports.forEach((p) => fn(p)),
+  };
+  assert.deepEqual(listPorts(outputs).map((p) => p.name), ['MPC Sample']);
+});
+
+test('entries() is used when values() and forEach are unusable', () => {
+  const ports = [port('a', 'MPC Sample')];
+  const outputs = {
+    get: () => undefined,
+    entries: () => ports.map((p) => [p.id, p]),
+  };
+  assert.deepEqual(listPorts(outputs).map((p) => p.name), ['MPC Sample']);
+});
+
+test('an iterator that never finishes cannot hang the page', () => {
+  const endless = { values: () => ({ next: () => ({ value: port('x', 'X'), done: false }) }) };
+  const got = listPorts(endless);
+  assert.ok(got.length > 0 && got.length <= 4096, `drained ${got.length}`);
+});
+
+test('outputs exposed as a method, not a property', () => {
+  // The 2012 draft. Easy to miss: a function has a length (its arity), so
+  // array-like handling yields nothing rather than failing loudly.
+  const ports = [port('a', 'MPC Sample')];
+  const asMethod = () => ports.slice();
+
+  assert.deepEqual(listPorts(asMethod).map((p) => p.name), ['MPC Sample']);
+  assert.equal(findPort(asMethod, 'a').name, 'MPC Sample');
+  assert.match(describePorts(asMethod), /method -> array.*1 found/);
+});
+
+test('getOutputs finds outputs however the access object exposes them', () => {
+  const ports = [port('a', 'MPC Sample')];
+  const map = new Map(ports.map((p) => [p.id, p]));
+
+  assert.equal(getOutputs({ outputs: map }), map, 'property form');
+  assert.deepEqual(listPorts(getOutputs({ outputs: () => ports })), ports, 'outputs() method');
+  assert.deepEqual(listPorts(getOutputs({ getOutputs: () => ports })), ports, 'getOutputs()');
+  assert.deepEqual(listPorts(getOutputs({ destinations: ports })), ports, 'destinations');
+  assert.equal(getOutputs(null), null);
+});
+
+test('a method-based access is treated as legacy', () => {
+  const ports = [port('a', 'MPC')];
+  assert.equal(isLegacyAccess({ outputs: () => ports }), true);
+  assert.equal(isLegacyAccess({ getOutputs: () => ports }), true);
+  assert.equal(isLegacyAccess({ outputs: new Map() }), false);
+});
+
+test('a throwing outputs method does not take the page down', () => {
+  const hostile = { outputs: () => { throw new TypeError('nope'); } };
+  assert.doesNotThrow(() => getOutputs(hostile));
+  assert.deepEqual(listPorts(getOutputs(hostile)), []);
+  assert.equal(isLegacyAccess(hostile), true);
 });
 
 test('openAccess falls back when sysex is refused', async () => {
