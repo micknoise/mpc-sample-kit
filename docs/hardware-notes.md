@@ -40,23 +40,59 @@ evidence of user input.
   here could be captured to the unit without needing file access at all.
 - Does it respond to MIDI clock / transport (0xFA start, 0xF8 clock)?
 
-## Storage — mass storage is not being presented
+## Storage — solved: the data partition is ext4
 
-The reported path is **SHIFT + pad 16 (PROJECT) → encoder → `SD Card Access`**.
+Disk mode is **SHIFT + pad 16 (PROJECT) → encoder → `SD Card Access`**.
 
-Owner has a microSD card in the slot with projects on it, has used this mode,
-and has also read the card directly in the MacBook. Projects appear on the
-device's own screen but not on the computer.
+**MIDI and disk mode are mutually exclusive.** The moment disk mode engages,
+both CoreMIDI endpoints disappear; `mpcmidi list` returns nothing. Any tool
+that drives the unit must treat these as two states, not one.
 
-Established here: while connected, **no block device exists for the MPC at all**
-— `diskutil list` and `/dev/disk*` show only the internal drive and an Xcode
-simulator image. This rules out a Finder visibility problem, an unmounted
-volume, and an unreadable filesystem. The unit is enumerated on USB but is
-presenting only its MIDI interface.
+When disk mode engages, `/dev/disk6` appears — 7.9 GB, FDisk partition scheme:
 
-So the question is not "why is the volume hidden" but "why is the mass storage
-interface absent". Next step is to watch `/dev` in real time while disk mode is
-toggled on the device, to see whether it re-enumerates at all.
+| Partition | Size | Type | Mounts on macOS? |
+|---|---|---|---|
+| `disk6s1` | 66 MB | FAT16, volume `boot` | **yes** — `/Volumes/boot` |
+| `disk6s2` | 7.9 GB | `Linux` (ext4) | **no** |
+
+This explains the long-standing "projects don't show up in Finder" symptom
+completely. The MPC Sample runs embedded Linux and keeps its content on an ext4
+partition, which macOS cannot mount natively. Finder shows only the small FAT
+partition. Nothing is wrong with the card, the cable or the procedure.
+
+### The transfer area
+
+The FAT partition carries the sanctioned exchange folders, and they are
+writable from macOS:
+
+```
+/Volumes/boot/MPC-Sample/
+├── Projects/
+└── Samples/User/
+```
+
+Both were empty on first inspection. This is almost certainly the import/export
+staging area — meaning **samples can be delivered to the device without any
+ext4 access at all**, which is the route drumkit creation should take.
+
+Note the 63 MB usable ceiling on this partition. That is a real constraint on
+how much sample content can be staged in one pass.
+
+### Reading ext4, if it ever proves necessary
+
+`/dev/rdisk6s2` is not readable without root. Options, in increasing weight:
+export a project from the device into the staging folder and avoid ext4
+entirely; macFUSE + `ext4fuse` (read-only, needs a kernel extension, security
+approval and a reboot); or a Linux VM with the raw device passed through.
+Neither macFUSE, Docker, colima nor lima is currently installed on this Mac.
+
+Writing to ext4 from macOS should be considered off the table — `fuse-ext2` is
+known to be unreliable, and this is the device's root filesystem.
+
+### Caution
+
+`disk6s1` is named `boot` and sits next to the device's root filesystem.
+Confine all writes to `MPC-Sample/Projects` and `MPC-Sample/Samples/User`.
 
 MPC projects are a `.xpj` project file plus a matching `[ProjectData]` folder;
 **both** are required for a project to reopen. Programs are `.xpm`.
