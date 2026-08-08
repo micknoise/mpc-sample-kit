@@ -48,6 +48,8 @@
   .grid { display: grid; gap: 3px; margin-top: .25rem; }
   .track { display: grid; grid-template-columns: 84px 1fr; gap: 8px; align-items: center; }
   .track-name { font-size: 11px; color: var(--dim); text-align: right; overflow: hidden; text-overflow: ellipsis; }
+  .track-name.audition { cursor: pointer; }
+  .track-name.audition:hover { color: var(--accent); }
   .steps { display: grid; gap: 3px; }
   .step {
     height: 26px; border-radius: 3px; background: var(--line);
@@ -145,6 +147,18 @@
         <select id="fillShape"></select>
       </div>
       <div class="field">
+        <label for="kitPreset">Kit</label>
+        <select id="kitPreset">
+          <option value="full">full — all 16 pads</option>
+          <option value="minimal">minimal — everything on pads 1, 2, 5</option>
+          <option value="custom">custom…</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="kitSpec">Custom pads</label>
+        <input type="text" id="kitSpec" value="kick=1,snare=2,hat=5" size="22" disabled>
+      </div>
+      <div class="field">
         <label for="lock">Lock (hold steady)</label>
         <input type="text" id="lock" placeholder="e.g. kick" size="12">
       </div>
@@ -183,7 +197,7 @@ import { barPattern } from '../src/arrange.mjs';
 import { FILL_SHAPES } from '../src/transform.mjs';
 import { clockEvents } from '../src/clock.mjs';
 import { createTransport } from '../src/transport.mjs';
-import { resolveNote, resolveVoices, DEFAULT_KIT } from '../src/pads.mjs';
+import { resolveNote, resolveVoices, noteToPad, DEFAULT_KIT } from '../src/pads.mjs';
 
 const $ = (id) => document.getElementById(id);
 const statusEl = $('status');
@@ -249,6 +263,50 @@ function parseEuclid(spec) {
   return tracks;
 }
 
+// Every role folded onto three pads, rather than a short map that simply omits
+// the rest. Omitting them makes a style with a ride or toms fail to resolve and
+// render nothing at all, which defeats the purpose: the point is to hear the
+// same rhythm on pads whose contents are known.
+const MINIMAL_KIT = {
+  kick: 1,
+  snare: 2, rim: 2, clap: 2, tomLow: 2, tomMid: 2, tomHigh: 2, perc1: 2, perc2: 2, fx: 2,
+  hat: 5, hatOpen: 5, shaker: 5, tamb: 5, ride: 5, crash: 5,
+};
+
+/**
+ * The kit in force.
+ *
+ * Worth being able to narrow: the default role-to-pad map is a convention, not
+ * something read off the hardware, so a style reaching for a ride or a tom may
+ * be triggering something else entirely. Restricting to pads whose contents are
+ * known separates rhythm problems from pad-content problems. Voice substitution
+ * and fills both degrade to whatever the kit provides.
+ */
+function currentKit() {
+  const preset = $('kitPreset').value;
+  if (preset === 'minimal') return MINIMAL_KIT;
+  if (preset === 'full') return DEFAULT_KIT;
+
+  const kit = {};
+  for (const part of $('kitSpec').value.split(/[,\s]+/).filter(Boolean)) {
+    const m = /^([A-Za-z]\w*)=(\d+)$/.exec(part);
+    if (!m) throw new Error(`bad pad mapping "${part}" — expected name=pad`);
+    kit[m[1]] = +m[2];
+  }
+  if (!Object.keys(kit).length) throw new Error('custom kit is empty');
+  return kit;
+}
+
+/** Plays one pad so the contents of the map can be checked by ear. */
+function audition(name) {
+  if (!output) return;
+  let note;
+  try { note = resolveNote(name, currentKit()); } catch { return; }
+  output.send([0x90, note, 112]);
+  output.send([0x80, note, 0], performance.now() + 140);
+  setStatus(`pad ${noteToPad(note)} (${name})`, 'ok');
+}
+
 // Hand edits to the seed pattern, keyed by track name. Cleared whenever the
 // underlying material changes, since edits to a boom-bap grid mean nothing once
 // the tracks have been replaced by a euclidean or a different style.
@@ -285,6 +343,7 @@ function currentBar(p, n) {
     decollideStrength: +$('decollide').value,
     fillShape: $('fillShape').value,
     fillShapes: style($('style').value).fillShapes,
+    kit: currentKit(),
   });
 }
 
@@ -299,9 +358,9 @@ function currentBar(p, n) {
  * it leaves the RNG stream — and therefore every velocity — untouched. Timing
  * humanisation stays in for exactly that reason.
  */
-function shapedTracks(p, seed) {
+function shapedTracks(p, seed, kit) {
   const flat = { ...p, swing: 0 };
-  const events = render(flat, { seed, repeats: 1, voiceSpread: +$('voice').value });
+  const events = render(flat, { seed, repeats: 1, voiceSpread: +$('voice').value, kit });
   const step = patternMs(p) / p.length;
 
   // Map every note a track might sound on, not just its primary — otherwise
@@ -309,9 +368,9 @@ function shapedTracks(p, seed) {
   // display. Primaries are claimed first so that a pattern with both a "snare"
   // and a "rim" track keeps them distinct.
   const byNote = {};
-  for (const name of Object.keys(p.tracks)) byNote[resolveNote(name, DEFAULT_KIT)] = name;
+  for (const name of Object.keys(p.tracks)) byNote[resolveNote(name, kit)] = name;
   for (const name of Object.keys(p.tracks)) {
-    for (const note of resolveVoices(name, DEFAULT_KIT)) {
+    for (const note of resolveVoices(name, kit)) {
       if (!(note in byNote)) byNote[note] = name;
     }
   }
@@ -360,13 +419,22 @@ function drawGrid(p, editable) {
   grid.classList.toggle('editable', editable);
 
   const cols = `repeat(${p.length}, minmax(14px, 1fr))`;
-  const shaped = shapedTracks(p, +$('seed').value);
+  const kit = currentKit();
+  const shaped = shapedTracks(p, +$('seed').value, kit);
 
   for (const [name, steps] of Object.entries(shaped)) {
     const row = document.createElement('div');
     row.className = 'track';
     const label = document.createElement('div');
-    label.className = 'track-name'; label.textContent = name;
+    label.className = 'track-name';
+    let pad = null;
+    try { pad = noteToPad(resolveNote(name, kit)); } catch { /* not in this kit */ }
+    label.textContent = pad ? `${name} ${pad}` : name;
+    label.title = pad ? `pad ${pad} — click to audition` : `${name} is not in this kit`;
+    if (pad) {
+      label.classList.add('audition');
+      label.addEventListener('click', () => audition(name));
+    }
     const cells = document.createElement('div');
     cells.className = 'steps'; cells.style.gridTemplateColumns = cols;
 
@@ -415,6 +483,7 @@ function buildTransport() {
       const events = render(p, {
         voiceSpread: +$('voice').value,
         seed: +$('seed').value + index,
+        kit: currentKit(),
       });
       if ($('sync').checked) {
         events.push(...clockEvents(p.bpm, patternMs(p), { transport: false }));
@@ -498,6 +567,11 @@ $('style').addEventListener('change', syncFromStyle);
 for (const id of ['bpm', 'swing', 'dyn', 'conf', 'phrase', 'drift', 'voice', 'decollide', 'fillEvery', 'fillShape', 'showBar', 'seed', 'lock', 'anchor', 'swingUnit', 'euclid']) {
   $(id).addEventListener('input', refresh);
 }
+$('kitPreset').addEventListener('change', () => {
+  $('kitSpec').disabled = $('kitPreset').value !== 'custom';
+  refresh();
+});
+$('kitSpec').addEventListener('input', refresh);
 $('euclid').addEventListener('change', clearEdits);
 $('resetGrid').addEventListener('click', () => { clearEdits(); refresh(); });
 $('play').addEventListener('click', play);
