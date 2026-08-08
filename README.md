@@ -77,6 +77,59 @@ node bin/mpc-seq.mjs patterns/boom-bap.json --bpm 96 --repeats 8
 node bin/mpc-seq.mjs patterns/boom-bap.json --dry-run   # inspect events
 ```
 
+## Generating patterns
+
+Styles are starting points chosen to respond well to the transforms below:
+
+```bash
+node bin/mpc-seq.mjs --list-styles
+node bin/mpc-seq.mjs --style garage --bars 8
+```
+
+Euclidean rhythms distribute pulses as evenly as possible across a bar, which
+is where a lot of the interesting material comes from. `name=pulses/steps`,
+optionally `@rotation`:
+
+```bash
+node bin/mpc-seq.mjs --euclid "kick=4/16,snare=2/16@4,hat=7/16" --bpm 128 --bars 8
+```
+
+This is Bjorklund's algorithm proper, so the named rhythms come out canonical —
+`E(3,8)` is the tresillo `x..x..x.`, `E(5,8)` the cinquillo `x.xx.xx.`.
+
+## Algorithmic control
+
+`--bars N` grows a one-bar idea into a phrase that develops instead of looping.
+Each bar varies the *original* rather than the previous bar, so the groove
+drifts without wandering off; bar 1 always plays as written so the listener
+hears the idea plainly first.
+
+```bash
+node bin/mpc-seq.mjs --style techno --bars 16 --drift 0.4 --fill-every 4 --lock kick
+```
+
+| Flag | Effect |
+|---|---|
+| `--drift` | 0–1, how far variations stray |
+| `--fill-every N` | fill on every Nth bar, 0 to disable |
+| `--lock a,b` | tracks held steady while others vary |
+| `--ratchet P` | probability of a hit becoming a roll |
+| `--seed N` | seed for all randomness |
+
+Everything stochastic is seeded, so a phrase you like is reproducible: note the
+seed and it renders identically every time.
+
+The building blocks are composable directly from [`src/`](src/transform.mjs) if
+the CLI flags are too blunt — `rotate`, `thin`, `densify`, `mutate`, `shade`,
+`accentEvery`, `upsample`, `vary`, `fill`, plus `arrange`, `evolve` and `chain`
+for song form.
+
+## Tests
+
+```bash
+node --test "test/*.test.mjs"
+```
+
 ## tools/midi/mpcmidi
 
 A ~140-line C utility so Claude Code can talk MIDI without native npm builds.

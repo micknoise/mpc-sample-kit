@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-// Renders a drum pattern and plays it on the MPC Sample.
+// Generates, transforms and plays drum patterns on the MPC Sample.
 //
-//   bin/mpc-seq.mjs patterns/boom-bap.json
-//   bin/mpc-seq.mjs patterns/boom-bap.json --bpm 96 --repeats 4
-//   bin/mpc-seq.mjs patterns/boom-bap.json --dry-run
+//   mpc-seq --style boom-bap --bars 8
+//   mpc-seq --euclid "kick=4/16,snare=2/16@4,hat=7/16" --bpm 128
+//   mpc-seq patterns/boom-bap.json --bars 16 --drift 0.4 --fill-every 4
+//   mpc-seq --style techno --bars 8 --dry-run
 //
-// A pattern file is JSON matching the spec accepted by pattern(), plus optional
-// "repeats", "kit", "channel" and "gateMs" keys.
+// Every stochastic step is seeded, so a given --seed always renders identically.
 
 import { readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
@@ -15,59 +15,150 @@ import { dirname, resolve } from 'node:path';
 
 import { pattern, patternMs } from '../src/pattern.mjs';
 import { render, toMpcmidi } from '../src/schedule.mjs';
+import { style, styleNames, euclidTrack } from '../src/generate.mjs';
+import { ratchetPattern } from '../src/transform.mjs';
+import { arrange, arrangementMs, evolve } from '../src/arrange.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const MPCMIDI = resolve(here, '../tools/midi/mpcmidi');
 
+const USAGE = `usage: mpc-seq [pattern.json] [options]
+
+source (pick one, or combine a file with overrides)
+  --style NAME         start from a style preset
+  --euclid SPEC        euclidean tracks, e.g. "kick=4/16,snare=2/16@4,hat=7/16"
+  --list-styles        show available styles and exit
+
+shape
+  --bpm N              tempo
+  --swing F            0-1, delay of every second step (musical: 0.1-0.3)
+  --ratchet P          0-1, probability of a hit becoming a roll
+
+arrangement
+  --bars N             evolve into an N-bar phrase instead of looping
+  --drift F            0-1, how far variations stray (default 0.25)
+  --fill-every N       fill on every Nth bar, 0 to disable (default 4)
+  --lock a,b           tracks to hold steady while others vary (default kick)
+  --repeats N          plain loop count when --bars is not used
+
+  --seed N             seed for all randomness
+  --port NAME          MIDI destination (default "MPC Sample")
+  --dry-run            print the event list instead of playing`;
+
 function parseArgs(argv) {
-  const opts = { port: 'MPC Sample', dryRun: false };
+  const o = { port: 'MPC Sample' };
   const rest = [];
+  const num = (v, name) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) throw new Error(`${name} expects a number, got "${v}"`);
+    return n;
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--dry-run') opts.dryRun = true;
-    else if (a === '--bpm') opts.bpm = Number(argv[++i]);
-    else if (a === '--repeats') opts.repeats = Number(argv[++i]);
-    else if (a === '--port') opts.port = argv[++i];
-    else if (a === '--seed') opts.seed = Number(argv[++i]);
-    else if (a.startsWith('--')) throw new Error(`unknown option ${a}`);
-    else rest.push(a);
+    switch (a) {
+      case '--dry-run': o.dryRun = true; break;
+      case '--list-styles': o.listStyles = true; break;
+      case '--style': o.style = argv[++i]; break;
+      case '--euclid': o.euclid = argv[++i]; break;
+      case '--port': o.port = argv[++i]; break;
+      case '--lock': o.lock = argv[++i].split(/[,\s]+/).filter(Boolean); break;
+      case '--bpm': o.bpm = num(argv[++i], a); break;
+      case '--swing': o.swing = num(argv[++i], a); break;
+      case '--ratchet': o.ratchet = num(argv[++i], a); break;
+      case '--bars': o.bars = num(argv[++i], a); break;
+      case '--drift': o.drift = num(argv[++i], a); break;
+      case '--fill-every': o.fillEvery = num(argv[++i], a); break;
+      case '--repeats': o.repeats = num(argv[++i], a); break;
+      case '--seed': o.seed = num(argv[++i], a); break;
+      case '-h': case '--help': o.help = true; break;
+      default:
+        if (a.startsWith('--')) throw new Error(`unknown option ${a}`);
+        rest.push(a);
+    }
   }
-  return { opts, rest };
+  return { o, rest };
 }
 
-const { opts, rest } = parseArgs(process.argv.slice(2));
-if (!rest.length) {
-  console.error('usage: mpc-seq <pattern.json> [--bpm N] [--repeats N] [--port NAME] [--seed N] [--dry-run]');
-  process.exit(2);
+/** "kick=4/16,snare=2/16@4,hat=7/16" -> { kick: [...], snare: [...] } */
+function parseEuclid(spec) {
+  const tracks = {};
+  for (const part of spec.split(/[,\s]+/).filter(Boolean)) {
+    const m = /^([A-Za-z][\w]*)=(\d+)\/(\d+)(?:@(-?\d+))?$/.exec(part);
+    if (!m) throw new Error(`bad euclid spec "${part}" — expected name=pulses/steps[@rotation]`);
+    const [, name, pulses, steps, rot] = m;
+    tracks[name] = euclidTrack(Number(pulses), Number(steps), {
+      rotation: Number(rot ?? 0),
+      accentEvery: 4,
+    });
+  }
+  return tracks;
 }
 
-const spec = JSON.parse(readFileSync(rest[0], 'utf8'));
-if (opts.bpm) spec.bpm = opts.bpm;
+let o, rest;
+try { ({ o, rest } = parseArgs(process.argv.slice(2))); }
+catch (e) { console.error(`mpc-seq: ${e.message}`); process.exit(2); }
 
-const p = pattern(spec);
-const events = render(p, {
-  repeats: opts.repeats ?? spec.repeats ?? 1,
-  kit: spec.kit,
-  channel: spec.channel ?? 1,
-  gateMs: spec.gateMs ?? 40,
-  seed: opts.seed ?? spec.seed ?? 1,
-});
+if (o.help) { console.log(USAGE); process.exit(0); }
+if (o.listStyles) { console.log(styleNames().join('\n')); process.exit(0); }
 
-const bars = (p.length / p.stepsPerBeat / 4).toFixed(2);
-const repeats = opts.repeats ?? spec.repeats ?? 1;
-console.error(
-  `${p.bpm} bpm · ${p.length} steps (${bars} bars) · ${Object.keys(p.tracks).length} tracks · ` +
-  `${repeats}x · ${events.length} events · ${((patternMs(p) * repeats) / 1000).toFixed(1)}s`,
-);
+let spec;
+try {
+  if (rest.length) spec = JSON.parse(readFileSync(rest[0], 'utf8'));
+  else if (o.style) spec = style(o.style);
+  else if (o.euclid) spec = { bpm: 120, tracks: {} };
+  else { console.error(USAGE); process.exit(2); }
 
-const text = toMpcmidi(events);
-if (opts.dryRun) { process.stdout.write(text); process.exit(0); }
+  if (o.euclid) spec.tracks = { ...spec.tracks, ...parseEuclid(o.euclid) };
+  if (o.bpm !== undefined) spec.bpm = o.bpm;
+  if (o.swing !== undefined) spec.swing = o.swing;
 
-const child = spawn(MPCMIDI, ['play', opts.port], { stdio: ['pipe', 'inherit', 'inherit'] });
-child.on('error', (e) => {
-  console.error(`could not run ${MPCMIDI}: ${e.message}\nBuild it first: cd tools/midi && make`);
+  let p = pattern(spec);
+  if (o.ratchet) p = ratchetPattern(p, { rollProb: o.ratchet, rand: undefined });
+
+  const seed = o.seed ?? spec.seed ?? 1;
+  const renderOpts = {
+    kit: spec.kit,
+    channel: spec.channel ?? 1,
+    gateMs: spec.gateMs ?? 40,
+    seed,
+  };
+
+  let events, totalMs, label;
+  if (o.bars) {
+    const sections = evolve(p, {
+      bars: o.bars,
+      drift: o.drift ?? 0.25,
+      fillEvery: o.fillEvery ?? 4,
+      lock: o.lock ?? ['kick'],
+      seed,
+    });
+    events = arrange(sections, renderOpts);
+    totalMs = arrangementMs(sections);
+    label = `${o.bars} bars evolving (drift ${o.drift ?? 0.25}, fill every ${o.fillEvery ?? 4})`;
+  } else {
+    const repeats = o.repeats ?? spec.repeats ?? 1;
+    events = render(p, { ...renderOpts, repeats });
+    totalMs = patternMs(p) * repeats;
+    label = `${repeats}x loop`;
+  }
+
+  console.error(
+    `${p.bpm} bpm · ${p.length} steps · ${Object.keys(p.tracks).length} tracks · ` +
+    `${label} · ${events.length} events · ${(totalMs / 1000).toFixed(1)}s`,
+  );
+
+  const text = toMpcmidi(events);
+  if (o.dryRun) { process.stdout.write(text); process.exit(0); }
+
+  const child = spawn(MPCMIDI, ['play', o.port], { stdio: ['pipe', 'inherit', 'inherit'] });
+  child.on('error', (e) => {
+    console.error(`could not run ${MPCMIDI}: ${e.message}\nBuild it first: cd tools/midi && make`);
+    process.exit(1);
+  });
+  child.stdin.write(text);
+  child.stdin.end();
+  child.on('exit', (code) => process.exit(code ?? 0));
+} catch (e) {
+  console.error(`mpc-seq: ${e.message}`);
   process.exit(1);
-});
-child.stdin.write(text);
-child.stdin.end();
-child.on('exit', (code) => process.exit(code ?? 0));
+}
