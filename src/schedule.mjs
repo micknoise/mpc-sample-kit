@@ -21,6 +21,11 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
  * @param {object} [opts.kit]       role -> pad map
  * @param {number} [opts.channel]   MIDI channel, 1-16
  * @param {number} [opts.gateMs]    note length
+ * @param {boolean} [opts.noteOffs]  emit note-offs at all. MPC pads play
+ *                                   one-shot samples and ignore them, so
+ *                                   dropping them halves the message count -
+ *                                   which matters where each message crosses a
+ *                                   slow bridge, as in an iOS WebView.
  * @param {number} [opts.seed]      PRNG seed for humanisation
  * @param {number} [opts.limbSpread] 0-1, share of humanizeMs that varies per
  *                                   voice rather than being shared across the
@@ -36,6 +41,7 @@ export function render(p, opts = {}) {
     voices = DEFAULT_VOICES,
     voiceSpread = 0.35,
     limbSpread = 0.25,
+    noteOffs = true,
     channel = 1,
     gateMs = 40,
     seed = 1,
@@ -126,7 +132,7 @@ export function render(p, opts = {}) {
         t = Math.max(0, t);
         const sounded = pickVoice(name, v);
         events.push({ ms: t, bytes: [noteOn, sounded, v] });
-        events.push({ ms: t + gateMs, bytes: [noteOff, sounded, 0] });
+        if (noteOffs) events.push({ ms: t + gateMs, bytes: [noteOff, sounded, 0] });
       }
     }
   }

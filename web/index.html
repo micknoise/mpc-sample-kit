@@ -209,6 +209,7 @@
         <input type="number" id="showBar" min="0" max="31" step="1" value="0" style="width:60px">
       </label>
       <label style="margin:0"><input type="checkbox" id="sync"> send MIDI clock</label>
+      <label style="margin:0"><input type="checkbox" id="noteOffs" checked> send note-offs</label>
     </div>
     <div class="scroll"><div class="grid" id="grid"></div></div>
     <p class="note" id="gridHint"></p>
@@ -624,6 +625,7 @@ function buildTransport() {
         voiceSpread: +$('voice').value,
         seed: +$('seed').value + index,
         kit: currentKit(),
+        noteOffs: $('noteOffs').checked,
       });
       if ($('sync').checked) {
         events.push(...clockEvents(p.bpm, patternMs(p), { transport: false }));
@@ -675,6 +677,7 @@ async function record() {
         voiceSpread: +$('voice').value,
         seed: +$('seed').value + index,
         kit: currentKit(),
+        noteOffs: $('noteOffs').checked,
       });
       events.push(...clockEvents(p.bpm, patternMs(p), { transport: false }));
       return { events, durationMs: patternMs(p) };
@@ -709,7 +712,7 @@ async function measure() {
   $('measure').disabled = true;
   setStatus('measuring — 16 quiet notes, please wait…', 'ok');
 
-  measureTiming({ output, input, count: 16, spacingMs: 125 }).then((result) => {
+  measureTiming({ output, input, count: 16, spacingMs: 125, noteOffs: $('noteOffs').checked }).then((result) => {
     $('measure').disabled = false;
     const mode = useSoftwareTiming() ? `software (${ticker?.kind ?? 'timer'})` : 'midi timestamps';
     setStatus(`${mode}: ${describeTiming(result)}`, result.stats.worst < 15 ? 'ok' : 'bad');

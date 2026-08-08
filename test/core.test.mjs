@@ -726,3 +726,18 @@ test('randomTrack respects density bounds', () => {
   assert.equal(randomTrack(16, 0, { rand: rng(1) }).filter(Boolean).length, 0);
   assert.equal(randomTrack(16, 1, { rand: rng(1) }).filter(Boolean).length, 16);
 });
+
+test('note-offs can be dropped, halving the message count', () => {
+  const p = pattern({ bpm: 120, tracks: { kick: 'x...x...x...x...' } });
+  const withOffs = render(p, { seed: 1 });
+  const without = render(p, { seed: 1, noteOffs: false });
+
+  assert.equal(withOffs.length, 8);
+  assert.equal(without.length, 4, 'exactly the note-ons');
+  assert.ok(without.every((e) => (e.bytes[0] & 0xf0) === 0x90));
+  assert.deepEqual(
+    without.map((e) => e.ms),
+    withOffs.filter((e) => (e.bytes[0] & 0xf0) === 0x90).map((e) => e.ms),
+    'the notes themselves are unchanged',
+  );
+});

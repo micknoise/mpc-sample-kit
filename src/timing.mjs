@@ -62,6 +62,7 @@ export function measureTiming(opts) {
     spacingMs = 125,
     note = 36,
     velocity = 1,
+    noteOffs = true,
     leadMs = 300,
     now = () => performance.now(),
     setTimer = setTimeout,
@@ -85,7 +86,7 @@ export function measureTiming(opts) {
       const at = start + i * spacingMs;
       intended.push(at);
       output.send([0x90, note, velocity], at);
-      output.send([0x80, note, 0], at + 30);
+      if (noteOffs) output.send([0x80, note, 0], at + 30);
     }
 
     // Wait for the burst plus a margin for the echo to come back.
