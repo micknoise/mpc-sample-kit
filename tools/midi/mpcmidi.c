@@ -78,10 +78,23 @@ static int cmd_send(const char *port, int argc, char **argv) {
     return 0;
 }
 
+// Set when monitoring starts, so arrivals are reported relative to it.
+static uint64_t monitor_start = 0;
+
+static double host_to_ms(uint64_t t) {
+    static mach_timebase_info_data_t tb;
+    if (!tb.denom) mach_timebase_info(&tb);
+    return (double)t * tb.numer / tb.denom / 1e6;
+}
+
 static void read_proc(const MIDIPacketList *pl, void *refCon, void *srcRefCon) {
     (void)refCon; (void)srcRefCon;
     const MIDIPacket *p = &pl->packet[0];
     for (unsigned i = 0; i < pl->numPackets; i++) {
+        // CoreMIDI stamps each packet on arrival, which is a tighter reading
+        // than whenever this callback happens to run.
+        uint64_t ts = p->timeStamp ? p->timeStamp : mach_absolute_time();
+        printf("%10.3f  ", host_to_ms(ts) - host_to_ms(monitor_start));
         for (UInt16 j = 0; j < p->length; j++) printf("%02X ", p->data[j]);
         printf("\n");
         fflush(stdout);
@@ -94,6 +107,7 @@ static int cmd_monitor(const char *port, double seconds) {
     if (!src) { fprintf(stderr, "mpcmidi: no source matching '%s'\n", port); return 1; }
 
     MIDIClientRef client; MIDIPortRef in;
+    monitor_start = mach_absolute_time();
     MIDIClientCreate(CFSTR("mpcmidi"), NULL, NULL, &client);
     MIDIInputPortCreate(client, CFSTR("in"), read_proc, NULL, &in);
     MIDIPortConnectSource(in, src, NULL);
