@@ -391,7 +391,37 @@ function clearEdits() {
 }
 
 
+/**
+ * A fingerprint of every control that affects the notes.
+ *
+ * Used to know when cached work is stale. Cheap to build and compared by
+ * value, so it costs nothing per bar.
+ */
+function controlKey() {
+  return [
+    'style', 'euclid', 'bpm', 'swing', 'swingUnit', 'dyn', 'conf', 'anchor',
+    'phrase', 'drift', 'voice', 'decollide', 'fillEvery', 'fillShape', 'seed',
+    'lock', 'kitPreset', 'kitSpec',
+  ].map((id) => $(id).value).join('|') + (edits ? JSON.stringify(edits) : '');
+}
+
+// Bar construction — parsing the style, varying, filling, un-stacking — was
+// being redone from scratch every bar, on the main thread, which is precisely
+// the thread that has to deliver the next note on time. On a phone that is
+// enough to be audible. Since a phrase repeats, each bar of it only needs
+// building once.
+let patternCache = { key: null, value: null };
+let barCache = { key: null, bars: new Map() };
+
 function currentPattern() {
+  const key = controlKey();
+  if (patternCache.key === key) return patternCache.value;
+  const value = buildPattern();
+  patternCache = { key, value };
+  return value;
+}
+
+function buildPattern() {
   const spec = style($('style').value);
   const eu = $('euclid').value.trim();
   if (eu) spec.tracks = parseEuclid(eu);
@@ -409,7 +439,20 @@ function currentPattern() {
 
 function currentBar(p, n) {
   const phrase = Math.max(1, +$('phrase').value);
-  return barPattern(p, n % phrase, {
+  const slot = n % phrase;
+
+  const key = controlKey();
+  if (barCache.key !== key) barCache = { key, bars: new Map() };
+  const hit = barCache.bars.get(slot);
+  if (hit) return hit;
+
+  const built = buildBar(p, slot);
+  barCache.bars.set(slot, built);
+  return built;
+}
+
+function buildBar(p, slot) {
+  return barPattern(p, slot, {
     drift: +$('drift').value,
     fillEvery: +$('fillEvery').value,
     lock: $('lock').value.split(/[,\s]+/).filter(Boolean),

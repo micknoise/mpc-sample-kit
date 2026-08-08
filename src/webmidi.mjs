@@ -212,6 +212,8 @@ export function wrapOutput(output, opts = {}) {
     now = () => performance.now(),
     setPoll = setInterval,
     clearPoll = clearInterval,
+    setFrame = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : null,
+    cancelFrame = typeof cancelAnimationFrame === 'function' ? cancelAnimationFrame : null,
     pollMs = 4,
     slackMs = 1,
   } = opts;
@@ -226,15 +228,30 @@ export function wrapOutput(output, opts = {}) {
   // error bounded by the poll interval instead of compounding per note.
   const queue = [];
   let poll = null;
+  let frame = null;
 
   const stopPolling = () => {
     if (poll !== null) { clearPoll(poll); poll = null; }
+    if (frame !== null && cancelFrame) { cancelFrame(frame); frame = null; }
   };
 
   const dispatch = () => {
     const t = now();
     while (queue.length && queue[0].at <= t + slackMs) output.send(queue.shift().bytes);
     if (!queue.length) stopPolling();
+    else if (setFrame) frame = setFrame(dispatch);
+  };
+
+  // Driven by a timer *and* by animation frames.
+  //
+  // Mobile browsers throttle short intervals unpredictably, and a stalled
+  // interval means late notes. Animation frames are coarser (about 16ms) but
+  // scheduled far more dependably, so running both means whichever fires first
+  // delivers, and the worst case is bounded by the better of the two rather
+  // than by the timer alone.
+  const startPolling = () => {
+    if (poll === null) poll = setPoll(dispatch, pollMs);
+    if (frame === null && setFrame) frame = setFrame(dispatch);
   };
 
   return {
@@ -249,7 +266,7 @@ export function wrapOutput(output, opts = {}) {
       while (i > 0 && queue[i - 1].at > at) i--;
       queue.splice(i, 0, { bytes, at });
 
-      if (poll === null) poll = setPoll(dispatch, pollMs);
+      startPolling();
     },
     clear() {
       queue.length = 0;
