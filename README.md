@@ -370,6 +370,21 @@ Those browsers implement an older draft of the API, so
   puts dozens of independently jittering timers in charge of the groove and is
   audibly loose on a phone. `clear()` drops the queue, keeping Stop working.
 
+  Dispatch is driven by the **audio render thread**, not by a timer. Measured on
+  an iPhone, `setInterval` dispatch jittered by up to 30ms, against 0.6ms
+  standard deviation for the same burst sent through CoreMIDI on a laptop — so
+  the echo path is clean and the fault was ours. Neither a larger look-ahead nor
+  cached bar generation moved it, because the problem is *when the wake-up
+  happens*, not how far ahead the work was queued: mobile browsers throttle and
+  coalesce timers.
+
+  The audio render thread runs at real-time priority and calls its processor
+  once per 128-frame quantum — about 2.7ms — whatever the main thread is doing.
+  It cannot send MIDI itself, but it can wake the main thread punctually, which
+  is the part that was failing. Three tiers, best first: AudioWorklet
+  (~2.7ms), ScriptProcessor (~5.8ms, deprecated but present in WebKit), then
+  timers. The status line names which one is in use.
+
   The **Timing** selector overrides the guess. `auto` uses timers only where the
   implementation looks archaic, but that inference is unreliable: how a browser
   exposes its port list says nothing about whether it honours timestamps, and a

@@ -230,6 +230,7 @@ import { barPattern } from '../src/arrange.mjs';
 import { FILL_SHAPES } from '../src/transform.mjs';
 import { clockEvents, recordArming } from '../src/clock.mjs';
 import { measureTiming, describeTiming } from '../src/timing.mjs';
+import { createTicker, openAudioContext } from '../src/audioclock.mjs';
 import { createTransport } from '../src/transport.mjs';
 import {
   listPorts, findPort, wrapOutput, openAccess, describePorts, getOutputs,
@@ -240,6 +241,7 @@ import { resolveNote, resolveVoices, noteToPad, DEFAULT_KIT } from '../src/pads.
 const $ = (id) => document.getElementById(id);
 const statusEl = $('status');
 let access = null, output = null, playing = false, sysexOK = false, recording = false, legacyMidi = false;
+let audioContext = null, ticker = null;
 
 function setStatus(msg, kind = '') { statusEl.textContent = msg; statusEl.className = kind; }
 
@@ -291,7 +293,27 @@ function useSoftwareTiming() {
 }
 
 function openPort(id) {
-  return wrapOutput(findPort(getOutputs(access), id), { legacy: useSoftwareTiming() });
+  return wrapOutput(findPort(getOutputs(access), id), { legacy: useSoftwareTiming(), ticker });
+}
+
+/**
+ * Brings up the audio clock. Must be called from a user gesture: iOS starts an
+ * AudioContext suspended and will not resume it otherwise.
+ *
+ * Software-timed dispatch was jittering by up to 30ms on a phone, against 0.6ms
+ * for the same burst through CoreMIDI on a laptop, and neither a bigger
+ * look-ahead nor cached generation moved it — the wake-ups themselves were
+ * late. The audio render thread runs at real-time priority and calls its
+ * processor once per 128-frame quantum whatever the main thread is doing, so
+ * driving dispatch from there replaces a throttled timer with a dependable one.
+ */
+async function ensureTicker() {
+  if (ticker) return ticker;
+  audioContext = await openAudioContext();
+  ticker = await createTicker(audioContext);
+  // Re-open the port so the output picks the ticker up.
+  if (access && $('port').value) output = openPort($('port').value);
+  return ticker;
 }
 
 function refreshPorts() {
@@ -316,12 +338,12 @@ function refreshPorts() {
   sel.value = (mpc ?? outs[0]).id;
   output = openPort(sel.value);
   $('play').disabled = false;
-  setStatus(`connected: ${output.name}${useSoftwareTiming() ? ' \u00b7 software timing' : ' \u00b7 midi timing'}`, 'ok');
+  setStatus(`connected: ${output.name}${useSoftwareTiming() ? ` \u00b7 ${ticker?.kind ?? 'timer'}` : ' \u00b7 midi timing'}`, 'ok');
 }
 
 $('port').addEventListener('change', (e) => {
   output = openPort(e.target.value);
-  setStatus(`connected: ${output.name}${useSoftwareTiming() ? ' \u00b7 software timing' : ' \u00b7 midi timing'}`, 'ok');
+  setStatus(`connected: ${output.name}${useSoftwareTiming() ? ` \u00b7 ${ticker?.kind ?? 'timer'}` : ' \u00b7 midi timing'}`, 'ok');
 });
 
 // ------------------------------------------------------------- build pattern
@@ -630,8 +652,9 @@ function play() {
  * What is possible is arming its sequencer over MMC and playing the phrase
  * through in real time, which is what this does.
  */
-function record() {
+async function record() {
   if (!output || playing || recording) return;
+  await ensureTicker();
   const bars = Math.max(1, +$('phrase').value);
   const { arm, disarm } = recordArming();
 
@@ -677,8 +700,9 @@ function record() {
  * our scheduling, the browser's MIDI implementation and the USB link — instead
  * of only the part visible from here.
  */
-function measure() {
+async function measure() {
   if (!output || playing || recording) return;
+  await ensureTicker();
   const inputs = listPorts(getInputs(access));
   const input = inputs.find((p) => /mpc/i.test(p.name ?? '')) ?? inputs[0] ?? null;
 
@@ -687,7 +711,7 @@ function measure() {
 
   measureTiming({ output, input, count: 16, spacingMs: 125 }).then((result) => {
     $('measure').disabled = false;
-    const mode = useSoftwareTiming() ? 'software timer' : 'midi timestamps';
+    const mode = useSoftwareTiming() ? `software (${ticker?.kind ?? 'timer'})` : 'midi timestamps';
     setStatus(`${mode}: ${describeTiming(result)}`, result.stats.worst < 15 ? 'ok' : 'bad');
     console.log('timing result', result);
   });
@@ -765,7 +789,7 @@ $('timing').addEventListener('change', () => {
   if (playing || recording) return;          // do not swap the clock mid-phrase
   if (access && $('port').value) output = openPort($('port').value);
   setStatus(
-    output ? `connected: ${output.name}${useSoftwareTiming() ? ' \u00b7 software timing' : ' \u00b7 midi timing'}` : 'idle',
+    output ? `connected: ${output.name}${useSoftwareTiming() ? ` \u00b7 ${ticker?.kind ?? 'timer'}` : ' \u00b7 midi timing'}` : 'idle',
     'ok',
   );
 });

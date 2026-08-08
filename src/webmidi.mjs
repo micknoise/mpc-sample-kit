@@ -210,6 +210,7 @@ export function wrapOutput(output, opts = {}) {
   const {
     legacy = false,
     now = () => performance.now(),
+    ticker = null,
     setPoll = setInterval,
     clearPoll = clearInterval,
     setFrame = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : null,
@@ -229,8 +230,11 @@ export function wrapOutput(output, opts = {}) {
   const queue = [];
   let poll = null;
   let frame = null;
+  let running = false;
 
   const stopPolling = () => {
+    running = false;
+    if (ticker) { ticker.stop(); return; }
     if (poll !== null) { clearPoll(poll); poll = null; }
     if (frame !== null && cancelFrame) { cancelFrame(frame); frame = null; }
   };
@@ -239,17 +243,16 @@ export function wrapOutput(output, opts = {}) {
     const t = now();
     while (queue.length && queue[0].at <= t + slackMs) output.send(queue.shift().bytes);
     if (!queue.length) stopPolling();
-    else if (setFrame) frame = setFrame(dispatch);
+    else if (!ticker && setFrame) frame = setFrame(dispatch);
   };
 
-  // Driven by a timer *and* by animation frames.
-  //
-  // Mobile browsers throttle short intervals unpredictably, and a stalled
-  // interval means late notes. Animation frames are coarser (about 16ms) but
-  // scheduled far more dependably, so running both means whichever fires first
-  // delivers, and the worst case is bounded by the better of the two rather
-  // than by the timer alone.
+  // An injected ticker — normally driven by the audio render thread, which
+  // wakes punctually regardless of main-thread load — takes over entirely.
+  // Without one, fall back to a timer plus animation frames.
   const startPolling = () => {
+    if (running) return;
+    running = true;
+    if (ticker) { ticker.start(dispatch); return; }
     if (poll === null) poll = setPoll(dispatch, pollMs);
     if (frame === null && setFrame) frame = setFrame(dispatch);
   };

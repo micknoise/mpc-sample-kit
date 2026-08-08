@@ -259,3 +259,46 @@ test('openAccess keeps sysex when it is granted', async () => {
   assert.equal(sysex, true);
   assert.equal(legacy, false);
 });
+
+test('an injected ticker drives dispatch instead of timers', () => {
+  const sent = [];
+  const raw = { id: 'a', name: 'MPC', send: (b) => sent.push(b) };
+  let clock = 0;
+  let tick = null;
+  let stops = 0;
+
+  const ticker = {
+    kind: 'fake',
+    start(fn) { tick = fn; },
+    stop() { tick = null; stops++; },
+  };
+  const out = wrapOutput(raw, {
+    legacy: true,
+    ticker,
+    now: () => clock,
+    setPoll: () => { throw new Error('timers must not be used when a ticker is given'); },
+    setFrame: null,
+  });
+
+  out.send([0x90, 36, 100], 100);
+  assert.ok(tick, 'ticker started');
+
+  clock = 50; tick();
+  assert.equal(sent.length, 0, 'not due yet');
+
+  clock = 100; tick();
+  assert.equal(sent.length, 1, 'delivered on the tick that covers it');
+  assert.equal(stops, 1, 'ticker stopped once the queue drained');
+});
+
+test('clear stops an injected ticker', () => {
+  const raw = { id: 'a', name: 'MPC', send() {} };
+  let tick = null, stops = 0;
+  const ticker = { start(fn) { tick = fn; }, stop() { tick = null; stops++; } };
+  const out = wrapOutput(raw, { legacy: true, ticker, now: () => 0, setFrame: null });
+
+  out.send([0x90, 36, 100], 1000);
+  out.clear();
+  assert.equal(stops, 1);
+  assert.equal(tick, null);
+});
