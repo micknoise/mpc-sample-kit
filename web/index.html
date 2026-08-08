@@ -93,6 +93,10 @@
         <select id="port"><option>— requesting access —</option></select>
       </div>
       <div class="field">
+        <label for="lookahead">Look-ahead ms</label>
+        <input type="number" id="lookahead" min="100" max="3000" step="100" value="400" style="width:90px">
+      </div>
+      <div class="field">
         <label for="timing">Timing</label>
         <select id="timing">
           <option value="auto">auto</option>
@@ -200,6 +204,7 @@
       <button id="reseed" class="ghost">New seed</button>
       <button id="resetGrid" class="ghost">Reset grid</button>
       <button id="record" class="ghost">Record to MPC</button>
+      <button id="measure" class="ghost">Measure timing</button>
       <label style="margin:0">bar
         <input type="number" id="showBar" min="0" max="31" step="1" value="0" style="width:60px">
       </label>
@@ -224,9 +229,11 @@ import { style, styleNames, euclidTrack } from '../src/generate.mjs';
 import { barPattern } from '../src/arrange.mjs';
 import { FILL_SHAPES } from '../src/transform.mjs';
 import { clockEvents, recordArming } from '../src/clock.mjs';
+import { measureTiming, describeTiming } from '../src/timing.mjs';
 import { createTransport } from '../src/transport.mjs';
 import {
   listPorts, findPort, wrapOutput, openAccess, describePorts, getOutputs,
+  getInputs,
 } from '../src/webmidi.mjs';
 import { resolveNote, resolveVoices, noteToPad, DEFAULT_KIT } from '../src/pads.mjs';
 
@@ -544,6 +551,7 @@ let transport = null;
 function buildTransport() {
   return createTransport({
     output,
+    lookaheadMs: Math.max(100, +$('lookahead').value || 400),
     sendTransport: $('sync').checked,
     nextBar: (index) => {
       const p = currentBar(currentPattern(), index);
@@ -616,6 +624,30 @@ function record() {
     },
   });
   transport.play();
+}
+
+/**
+ * Measures the real timing, rather than guessing at it.
+ *
+ * The MPC echoes inbound MIDI back out, so a burst sent at exact intervals
+ * returns stamped with when it actually arrived. That covers the whole chain —
+ * our scheduling, the browser's MIDI implementation and the USB link — instead
+ * of only the part visible from here.
+ */
+function measure() {
+  if (!output || playing || recording) return;
+  const inputs = listPorts(getInputs(access));
+  const input = inputs.find((p) => /mpc/i.test(p.name ?? '')) ?? inputs[0] ?? null;
+
+  $('measure').disabled = true;
+  setStatus('measuring — 16 quiet notes, please wait…', 'ok');
+
+  measureTiming({ output, input, count: 16, spacingMs: 125 }).then((result) => {
+    $('measure').disabled = false;
+    const mode = useSoftwareTiming() ? 'software timer' : 'midi timestamps';
+    setStatus(`${mode}: ${describeTiming(result)}`, result.stats.worst < 15 ? 'ok' : 'bad');
+    console.log('timing result', result);
+  });
 }
 
 function stop() {
@@ -701,6 +733,7 @@ $('kitPreset').addEventListener('change', () => {
 $('kitSpec').addEventListener('input', refresh);
 $('euclid').addEventListener('change', clearEdits);
 $('resetGrid').addEventListener('click', () => { clearEdits(); refresh(); });
+$('measure').addEventListener('click', measure);
 $('record').addEventListener('click', record);
 $('play').addEventListener('click', play);
 $('stop').addEventListener('click', stop);

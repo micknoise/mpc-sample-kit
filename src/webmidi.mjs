@@ -44,6 +44,25 @@ function unwrap(collection) {
  * `outputs()` or `getOutputs()` method, and some early shims called them
  * destinations.
  */
+/** As getOutputs, for the input side. */
+export function getInputs(access) {
+  if (!access) return null;
+  const keys = ['inputs', 'getInputs', 'sources'];
+  for (const key of keys) {
+    const value = access[key];
+    if (value != null && typeof value !== 'function') return value;
+  }
+  for (const key of keys) {
+    const fn = access[key];
+    if (typeof fn !== 'function') continue;
+    try {
+      const result = fn.call(access);
+      if (result != null) return result;
+    } catch { /* try the next form */ }
+  }
+  return null;
+}
+
 export function getOutputs(access) {
   if (!access) return null;
 
