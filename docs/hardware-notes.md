@@ -14,32 +14,49 @@ Date: 2026-08-08. Firmware: latest (per owner). macOS 15 (Darwin 25.5.0), Apple 
 | Presents a class-compliant USB-MIDI interface | CoreMIDI exposes one source and one destination, both named `MPC Sample` |
 | Both MIDI endpoints report as live | `kMIDIPropertyOffline == 0` on source and destination |
 | Does **not** mount as mass storage by default | `diskutil list` shows no external volume while connected |
-| Sends **no** MIDI when pads are pressed | 25s capture with owner playing pads: zero bytes |
-| Produces **no** sound from inbound note-on | Notes 0x24–0x27 sent on ch.1 and ch.10, velocity 0x7F: silent |
 | `mpcmidi` send + monitor paths are correct | Virtual-source loopback (`testsrc` → `monitor`) captures every packet |
+| **USB MIDI must be enabled on the device** | SHIFT + pad 8 (MIDI CONFIG) → MIDI Port → `USB`. Before this, MIDI was silent in both directions despite live endpoints |
+| Pads 1–16 respond to notes 36–51 (0x24–0x33) on ch.1 | Full sweep triggers audibly |
+| Velocity is honoured | Rendered patterns with ghost notes and accents sound dynamic |
+| Device echoes inbound MIDI back out (soft-thru) | Monitor captured our own sweep verbatim on the source port |
+| Emits `B0 7B 00` / `B0 40 00` on port switch | All Notes Off + Sustain Off seen at start of capture |
+| Timestamped scheduling holds up musically | 144 events over 10.6s via `mpcmidi play`, swung and humanised |
 
-The last row matters: the two negative results above it are **not** tool bugs.
-The CoreMIDI send and receive paths are proven working independently of the MPC.
+The loopback row matters: it was used to prove that the silence *before* the
+MIDI Port setting was changed was a device configuration issue and not a bug in
+this tooling.
+
+Note the soft-thru behaviour when writing anything that listens: the device
+will echo our own output back at us, so inbound capture is not automatically
+evidence of user input.
 
 ## Open questions
 
-- Does the MPC Sample transmit MIDI from its pads at all? The Akai FAQ notes it
-  "is not compatible for use as a controller with MPC 3 Software", which hints
-  that pad-to-MIDI-out may simply not be a feature.
-- Is there a MIDI enable/routing preference on the device gating USB MIDI I/O?
-- Does inbound MIDI only sound when a track is selected and its input armed?
-- Which storage does `SD Card Access` expose — the microSD only, or the 8GB
-  internal drive? Owner reports projects are not visible on either.
+- Does the MPC Sample transmit MIDI from its own pads? Still unobserved. The
+  Akai FAQ notes it "is not compatible for use as a controller with MPC 3
+  Software", which hints pad-to-MIDI-out may not be a feature. There is a
+  `Pad MIDI Out` setting in the MIDI CONFIG menu still to be tested.
+- Can the device's own sequencer record inbound MIDI? If so, patterns generated
+  here could be captured to the unit without needing file access at all.
+- Does it respond to MIDI clock / transport (0xFA start, 0xF8 clock)?
 
-## Storage
+## Storage — mass storage is not being presented
 
-Reported device path to disk mode: **SHIFT + pad 16 (PROJECT) → encoder →
-`SD Card Access`**. Unconfirmed on this unit.
+The reported path is **SHIFT + pad 16 (PROJECT) → encoder → `SD Card Access`**.
 
-The name suggests only the microSD is exposed, not the 8GB internal drive. If
-projects save to internal storage by default, they would never appear on the
-mounted volume — which matches the reported symptom exactly. Likely workaround
-is to explicitly save/copy the project to the SD card from the device first.
+Owner has a microSD card in the slot with projects on it, has used this mode,
+and has also read the card directly in the MacBook. Projects appear on the
+device's own screen but not on the computer.
+
+Established here: while connected, **no block device exists for the MPC at all**
+— `diskutil list` and `/dev/disk*` show only the internal drive and an Xcode
+simulator image. This rules out a Finder visibility problem, an unmounted
+volume, and an unreadable filesystem. The unit is enumerated on USB but is
+presenting only its MIDI interface.
+
+So the question is not "why is the volume hidden" but "why is the mass storage
+interface absent". Next step is to watch `/dev` in real time while disk mode is
+toggled on the device, to see whether it re-enumerates at all.
 
 MPC projects are a `.xpj` project file plus a matching `[ProjectData]` folder;
 **both** are required for a project to reopen. Programs are `.xpm`.

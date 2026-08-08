@@ -9,9 +9,11 @@
 
 #include <CoreMIDI/CoreMIDI.h>
 #include <CoreFoundation/CoreFoundation.h>
+#include <mach/mach_time.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 
 static void obj_name(MIDIObjectRef obj, char *out, size_t n) {
     CFStringRef s = NULL;
@@ -100,6 +102,79 @@ static int cmd_monitor(const char *port, double seconds) {
     return 0;
 }
 
+static uint64_t ns_to_host(uint64_t ns) {
+    static mach_timebase_info_data_t tb;
+    if (!tb.denom) mach_timebase_info(&tb);
+    return ns * tb.denom / tb.numer;
+}
+
+// Plays a timestamped event stream read from stdin. Each line is:
+//
+//     <offset-ms> <hex-byte>...
+//
+// Offsets are milliseconds from playback start and must be ascending. Events
+// are handed to CoreMIDI with absolute timestamps up front, so delivery timing
+// is owned by CoreMIDI's own high-priority thread rather than by this process
+// being scheduled — which is what makes the timing tight enough for music.
+static int cmd_play(const char *port) {
+    MIDIEndpointRef dest = find_endpoint(port, 0);
+    if (!dest) { fprintf(stderr, "mpcmidi: no destination matching '%s'\n", port); return 1; }
+
+    MIDIClientRef client; MIDIPortRef out;
+    MIDIClientCreate(CFSTR("mpcmidi"), NULL, NULL, &client);
+    MIDIOutputPortCreate(client, CFSTR("out"), &out);
+
+    // Start slightly in the future so the first events are not already late.
+    const uint64_t lead_ms = 100;
+    uint64_t start = mach_absolute_time() + ns_to_host(lead_ms * 1000000ULL);
+
+    static Byte buf[512 * 1024];
+    MIDIPacketList *pl = (MIDIPacketList *)buf;
+    MIDIPacket *cur = MIDIPacketListInit(pl);
+
+    char line[4096];
+    double last_ms = 0;
+    long queued = 0, sent = 0;
+
+    while (fgets(line, sizeof line, stdin)) {
+        char *save = NULL;
+        char *tok = strtok_r(line, " \t\r\n", &save);
+        if (!tok || *tok == '#') continue;
+
+        double off_ms = atof(tok);
+        Byte data[1024];
+        int len = 0;
+        while ((tok = strtok_r(NULL, " \t\r\n", &save)) && len < (int)sizeof data)
+            data[len++] = (Byte)strtol(tok, NULL, 16);
+        if (!len) continue;
+
+        if (off_ms > last_ms) last_ms = off_ms;
+        MIDITimeStamp ts = start + ns_to_host((uint64_t)(off_ms * 1000000.0));
+
+        MIDIPacket *next = MIDIPacketListAdd(pl, sizeof buf, cur, ts, len, data);
+        if (!next) {                      // buffer full — flush and start a new list
+            MIDISend(out, dest, pl);
+            sent += queued; queued = 0;
+            cur = MIDIPacketListInit(pl);
+            next = MIDIPacketListAdd(pl, sizeof buf, cur, ts, len, data);
+            if (!next) { fprintf(stderr, "mpcmidi: event too large\n"); return 1; }
+        }
+        cur = next;
+        queued++;
+    }
+
+    if (queued) {
+        OSStatus st = MIDISend(out, dest, pl);
+        if (st != noErr) { fprintf(stderr, "mpcmidi: MIDISend failed (%d)\n", (int)st); return 1; }
+        sent += queued;
+    }
+    fprintf(stderr, "mpcmidi: scheduled %ld events over %.2fs\n", sent, last_ms / 1000.0);
+
+    // Stay alive until CoreMIDI has delivered the final event.
+    usleep((useconds_t)((last_ms + lead_ms + 250) * 1000));
+    return 0;
+}
+
 // Creates a virtual MIDI source that emits a note every 500ms. Used to prove the
 // monitor path works independently of any attached hardware.
 static int cmd_testsrc(double seconds) {
@@ -123,10 +198,16 @@ static int cmd_testsrc(double seconds) {
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: mpcmidi list | send <port> <hex>... | monitor <port> [seconds] | testsrc [seconds]\n");
+        fprintf(stderr,
+            "usage: mpcmidi list\n"
+            "       mpcmidi send <port> <hex>...\n"
+            "       mpcmidi play <port>            # timestamped events on stdin\n"
+            "       mpcmidi monitor <port> [seconds]\n"
+            "       mpcmidi testsrc [seconds]\n");
         return 2;
     }
     if (!strcmp(argv[1], "testsrc")) return cmd_testsrc(argc >= 3 ? atof(argv[2]) : 5.0);
+    if (!strcmp(argv[1], "play") && argc >= 3) return cmd_play(argv[2]);
     if (!strcmp(argv[1], "list")) return cmd_list();
     if (!strcmp(argv[1], "send") && argc >= 4) return cmd_send(argv[2], argc - 3, argv + 3);
     if (!strcmp(argv[1], "monitor") && argc >= 3)

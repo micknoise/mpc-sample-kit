@@ -1,0 +1,13 @@
+{
+  "bpm": 88,
+  "stepsPerBeat": 4,
+  "swing": 0.18,
+  "humanizeMs": 6,
+  "humanizeVel": 12,
+  "repeats": 4,
+  "tracks": {
+    "kick":  "x..o | .... | ..x. | o...",
+    "snare": ".... | x..s | .... | x.s.",
+    "hat":   "o.oo | o.o. | o.oo | o.o."
+  }
+}
