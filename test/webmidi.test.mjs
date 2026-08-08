@@ -68,52 +68,80 @@ test('wrapOutput leaves a compliant output completely alone', () => {
   assert.equal(wrapOutput(raw, { legacy: false }), raw, 'Chrome path must be untouched');
 });
 
-test('wrapOutput schedules with timers when send ignores timestamps', () => {
-  const sent = [];
-  const raw = { id: 'a', name: 'MPC', send: (b) => sent.push(b) };
-
+/** Fake clock plus a single-interval poller, matching wrapOutput's design. */
+function timerHarness() {
   let clock = 0;
-  const timers = [];
+  const sent = [];
+  const raw = { id: 'a', name: 'MPC', send: (b) => sent.push({ bytes: b, at: clock }), clear() {} };
+  let interval = null;
+
   const out = wrapOutput(raw, {
     legacy: true,
     now: () => clock,
-    setTimer: (fn, delay) => { timers.push({ fn, at: clock + delay }); return timers.length - 1; },
-    clearTimer: (h) => { timers[h] = null; },
+    setPoll: (fn, ms) => { interval = { fn, ms }; return 1; },
+    clearPoll: () => { interval = null; },
+    pollMs: 4,
   });
-  const run = () => { for (const t of timers) if (t && t.at <= clock) { t.fn(); timers[timers.indexOf(t)] = null; } };
 
-  out.send([0x90, 36, 100], 0);      // due now
-  out.send([0x90, 38, 100], 500);    // due later
-  assert.deepEqual(sent, [[0x90, 36, 100]], 'immediate message goes straight out');
+  return {
+    out, sent,
+    get polling() { return interval !== null; },
+    advance(ms) {
+      const step = interval ? interval.ms : ms;
+      for (let done = 0; done < ms; done += step) {
+        clock += Math.min(step, ms - done);
+        if (interval) interval.fn();
+      }
+    },
+  };
+}
 
-  clock = 500; run();
-  assert.equal(sent.length, 2, 'later message fires at its time, not immediately');
+test('wrapOutput delivers at the right time using a single poll', () => {
+  const h = timerHarness();
+  h.out.send([0x90, 36, 100], 0);        // due now
+  h.out.send([0x90, 38, 100], 100);
+  h.out.send([0x90, 40, 100], 200);
+
+  assert.equal(h.sent.length, 1, 'the immediate one goes straight out');
+  assert.equal(h.polling, true, 'polling started for the future ones');
+
+  h.advance(100);
+  assert.equal(h.sent.length, 2);
+  assert.ok(Math.abs(h.sent[1].at - 100) <= 4, `landed at ${h.sent[1].at}`);
+
+  h.advance(100);
+  assert.equal(h.sent.length, 3);
+  assert.ok(Math.abs(h.sent[2].at - 200) <= 4, `landed at ${h.sent[2].at}`);
+});
+
+test('wrapOutput stops polling once the queue drains', () => {
+  const h = timerHarness();
+  h.out.send([0x90, 36, 100], 50);
+  assert.equal(h.polling, true);
+  h.advance(100);
+  assert.equal(h.polling, false, 'no timer left running when idle');
+});
+
+test('wrapOutput delivers in time order even when queued out of order', () => {
+  const h = timerHarness();
+  h.out.send([0x90, 3, 1], 300);
+  h.out.send([0x90, 1, 1], 100);
+  h.out.send([0x90, 2, 1], 200);
+  h.advance(400);
+  assert.deepEqual(h.sent.map((e) => e.bytes[1]), [1, 2, 3]);
 });
 
 test('wrapOutput clear cancels queued messages so Stop still works', () => {
-  const sent = [];
-  const raw = { id: 'a', name: 'MPC', send: (b) => sent.push(b), clear: () => {} };
+  const h = timerHarness();
+  h.out.send([0x90, 36, 100], 1000);
+  h.out.send([0x90, 38, 100], 2000);
+  assert.equal(h.polling, true);
 
-  let clock = 0;
-  const timers = new Map();
-  let next = 0;
-  const out = wrapOutput(raw, {
-    legacy: true,
-    now: () => clock,
-    setTimer: (fn, delay) => { const h = next++; timers.set(h, { fn, at: clock + delay }); return h; },
-    clearTimer: (h) => timers.delete(h),
-  });
+  h.out.clear();
+  assert.equal(h.polling, false, 'timer stopped');
 
-  out.send([0x90, 36, 100], 1000);
-  out.send([0x90, 38, 100], 2000);
-  assert.equal(timers.size, 2);
-
-  out.clear();
-  assert.equal(timers.size, 0, 'queued notes cancelled');
-
-  clock = 3000;
-  for (const t of timers.values()) t.fn();
-  assert.equal(sent.length, 0, 'nothing sounds after clear');
+  h.advance(3000);
+  assert.equal(h.sent.length, 0, 'nothing sounds after clear');
 });
 
 test('wrapOutput preserves identity fields', () => {

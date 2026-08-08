@@ -191,25 +191,50 @@ export function wrapOutput(output, opts = {}) {
   const {
     legacy = false,
     now = () => performance.now(),
-    setTimer = setTimeout,
-    clearTimer = clearTimeout,
+    setPoll = setInterval,
+    clearPoll = clearInterval,
+    pollMs = 4,
+    slackMs = 1,
   } = opts;
 
   if (!output || !legacy) return output;
 
-  const pending = new Set();
+  // One timer draining a sorted queue, rather than a timer per message.
+  //
+  // A setTimeout per note means dozens of independent timers competing, each
+  // carrying its own scheduling jitter, and on a phone that is audibly loose.
+  // A single short-interval poll gives every message the same clock and keeps
+  // error bounded by the poll interval instead of compounding per note.
+  const queue = [];
+  let poll = null;
+
+  const stopPolling = () => {
+    if (poll !== null) { clearPoll(poll); poll = null; }
+  };
+
+  const dispatch = () => {
+    const t = now();
+    while (queue.length && queue[0].at <= t + slackMs) output.send(queue.shift().bytes);
+    if (!queue.length) stopPolling();
+  };
+
   return {
     get id() { return output.id; },
     get name() { return output.name; },
     send(bytes, at) {
-      const delay = at == null ? 0 : at - now();
-      if (!(delay > 1)) { output.send(bytes); return; }
-      const handle = setTimer(() => { pending.delete(handle); output.send(bytes); }, delay);
-      pending.add(handle);
+      if (at == null || at - now() <= slackMs) { output.send(bytes); return; }
+
+      // Insert in time order. Events arrive nearly sorted already, so scanning
+      // from the end is effectively O(1) per insert.
+      let i = queue.length;
+      while (i > 0 && queue[i - 1].at > at) i--;
+      queue.splice(i, 0, { bytes, at });
+
+      if (poll === null) poll = setPoll(dispatch, pollMs);
     },
     clear() {
-      for (const handle of pending) clearTimer(handle);
-      pending.clear();
+      queue.length = 0;
+      stopPolling();
       output.clear?.();
     },
   };

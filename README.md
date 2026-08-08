@@ -365,9 +365,17 @@ Those browsers implement an older draft of the API, so
   throws there, and the failure surfaces as "MIDI access denied" — which points
   at permissions rather than at the real cause.
 - **Scheduled send.** Compliant implementations queue a message for a future
-  timestamp. Where that is not supported, delivery falls back to timers, so a
-  bar does not collapse onto a single instant. `clear()` cancels those timers,
-  keeping Stop working.
+  timestamp. Where that is not supported, delivery falls back to a single
+  short-interval poll draining a sorted queue — not a timer per message, which
+  puts dozens of independently jittering timers in charge of the groove and is
+  audibly loose on a phone. `clear()` drops the queue, keeping Stop working.
+
+  The **Timing** selector overrides the guess. `auto` uses timers only where the
+  implementation looks archaic, but that inference is unreliable: how a browser
+  exposes its port list says nothing about whether it honours timestamps, and a
+  timer can never beat a real MIDI scheduler. If timing sounds loose, try
+  **MIDI timestamps** — if the notes then arrive all at once, that
+  implementation genuinely ignores them and **software timer** is the ceiling.
 - **SysEx.** Only needed for MMC record-arming. Some implementations reject the
   option outright rather than denying permission, so a refusal must not take
   note output down with it.

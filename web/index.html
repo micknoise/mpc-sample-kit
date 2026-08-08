@@ -63,6 +63,21 @@
   .scroll { overflow-x: auto; }
   code { background: var(--bg); padding: .1rem .3rem; border-radius: 3px; font-size: 12px; }
   .note { color: var(--dim); font-size: 12px; margin-top: .75rem; }
+  .field.grow { flex: 1 1 100%; }
+
+  /* On a phone the controls were spilling off the side, which is why the
+     status line - the thing that reports what went wrong - was invisible. */
+  @media (max-width: 700px) {
+    body { padding: .75rem; }
+    .panel { padding: .75rem; }
+    .row { gap: .75rem; }
+    .field { flex: 1 1 100%; }
+    select, input[type=text], input[type=number] { width: 100%; }
+    input[type=range] { width: 100%; }
+    button { flex: 1 1 auto; min-width: 44%; }
+    .track { grid-template-columns: 62px 1fr; }
+    #status { display: block; padding: .35rem 0; }
+  }
 </style>
 </head>
 <body>
@@ -77,7 +92,15 @@
         <label for="port">MIDI output</label>
         <select id="port"><option>— requesting access —</option></select>
       </div>
-      <div class="field"><span id="status">starting up</span></div>
+      <div class="field">
+        <label for="timing">Timing</label>
+        <select id="timing">
+          <option value="auto">auto</option>
+          <option value="native">MIDI timestamps</option>
+          <option value="software">software timer</option>
+        </select>
+      </div>
+      <div class="field grow"><span id="status">starting up</span></div>
     </div>
   </div>
 
@@ -244,6 +267,26 @@ async function initMidi() {
   }
 }
 
+/**
+ * Whether to hand scheduling to the MIDI layer or drive it from a timer.
+ *
+ * These were conflated: old-style iterators were used as a proxy for "ignores
+ * scheduled send", but the two are unrelated. An implementation can be archaic
+ * in how it exposes ports and still honour timestamps perfectly — and driving
+ * that from timers is strictly worse, since a timer cannot beat a real MIDI
+ * scheduler. Hence the override.
+ */
+function useSoftwareTiming() {
+  const mode = $('timing').value;
+  if (mode === 'native') return false;
+  if (mode === 'software') return true;
+  return legacyMidi;
+}
+
+function openPort(id) {
+  return wrapOutput(findPort(getOutputs(access), id), { legacy: useSoftwareTiming() });
+}
+
 function refreshPorts() {
   const sel = $('port');
   const outs = listPorts(getOutputs(access));
@@ -264,14 +307,14 @@ function refreshPorts() {
   }
   const mpc = outs.find((o) => /mpc/i.test(o.name ?? ''));
   sel.value = (mpc ?? outs[0]).id;
-  output = wrapOutput(findPort(getOutputs(access), sel.value), { legacy: legacyMidi });
+  output = openPort(sel.value);
   $('play').disabled = false;
-  setStatus(`connected: ${output.name}${legacyMidi ? ' (software timing)' : ''}`, 'ok');
+  setStatus(`connected: ${output.name}${useSoftwareTiming() ? ' \u00b7 software timing' : ' \u00b7 midi timing'}`, 'ok');
 }
 
 $('port').addEventListener('change', (e) => {
-  output = wrapOutput(findPort(getOutputs(access), e.target.value), { legacy: legacyMidi });
-  setStatus(`connected: ${output.name}${legacyMidi ? ' (software timing)' : ''}`, 'ok');
+  output = openPort(e.target.value);
+  setStatus(`connected: ${output.name}${useSoftwareTiming() ? ' \u00b7 software timing' : ' \u00b7 midi timing'}`, 'ok');
 });
 
 // ------------------------------------------------------------- build pattern
@@ -643,6 +686,14 @@ $('style').addEventListener('change', syncFromStyle);
 for (const id of ['bpm', 'swing', 'dyn', 'conf', 'phrase', 'drift', 'voice', 'decollide', 'fillEvery', 'fillShape', 'showBar', 'seed', 'lock', 'anchor', 'swingUnit', 'euclid']) {
   $(id).addEventListener('input', refresh);
 }
+$('timing').addEventListener('change', () => {
+  if (playing || recording) return;          // do not swap the clock mid-phrase
+  if (access && $('port').value) output = openPort($('port').value);
+  setStatus(
+    output ? `connected: ${output.name}${useSoftwareTiming() ? ' \u00b7 software timing' : ' \u00b7 midi timing'}` : 'idle',
+    'ok',
+  );
+});
 $('kitPreset').addEventListener('change', () => {
   $('kitSpec').disabled = $('kitPreset').value !== 'custom';
   refresh();
