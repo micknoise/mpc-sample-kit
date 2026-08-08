@@ -41,9 +41,11 @@ export function parseSteps(str) {
  * @param {number}  spec.bpm            beats per minute
  * @param {object}  spec.tracks         track name -> step string
  * @param {number} [spec.stepsPerBeat]  grid resolution, 4 = sixteenth notes
- * @param {number} [spec.swing]         0-1, proportion of a step to delay
- *                                      every second step by. 0.5 is hard triplet
- *                                      swing; musical values sit near 0.1-0.3.
+ * @param {number} [spec.swing]         0-1, how far the swung half of each pair
+ *                                      is displaced. 1/3 is true triplet swing.
+ * @param {number} [spec.swingUnit]     steps per half-pair: 1 swings the 16ths
+ *                                      (hip-hop, garage), 2 swings the 8ths
+ *                                      (jazz). See swungStep().
  * @param {number} [spec.humanizeMs]    +/- timing jitter in milliseconds
  * @param {number} [spec.humanizeVel]   +/- velocity jitter
  */
@@ -54,6 +56,7 @@ export function pattern(spec) {
     stepsPerBeat = 4,
     beatsPerBar = 4,
     swing = 0,
+    swingUnit = 1,
     humanizeMs = 0,
     humanizeVel = 0,
     dynamics = {},
@@ -62,6 +65,9 @@ export function pattern(spec) {
   if (!(bpm > 0)) throw new Error('bpm must be positive');
   if (!tracks || !Object.keys(tracks).length) throw new Error('pattern needs at least one track');
   if (swing < 0 || swing >= 1) throw new RangeError('swing must be in [0, 1)');
+  if (!Number.isInteger(swingUnit) || swingUnit < 1) {
+    throw new RangeError('swingUnit must be a positive integer (1 = swing the 16ths, 2 = the 8ths)');
+  }
 
   const parsed = {};
   for (const [name, steps] of Object.entries(tracks)) {
@@ -71,10 +77,45 @@ export function pattern(spec) {
   const length = Math.max(...Object.values(parsed).map((s) => s.length));
 
   return {
-    bpm, stepsPerBeat, beatsPerBar, swing, humanizeMs, humanizeVel,
+    bpm, stepsPerBeat, beatsPerBar, swing, swingUnit, humanizeMs, humanizeVel,
     dynamics: { ...DEFAULT_DYNAMICS, ...dynamics },
     tracks: parsed, length,
   };
+}
+
+/**
+ * Where a step actually falls once swing is applied, in fractional steps.
+ *
+ * Swing is a time warp within each pair of swing units, not a delay bolted onto
+ * alternate steps: the first half of the pair is stretched and the second half
+ * compressed by the same proportion. That matters for two reasons.
+ *
+ * Delaying the second half without compressing it shoves those notes towards
+ * the following step — at swing 0.5 on a 16th grid the gap closes to an eighth
+ * of a beat and neighbouring tracks flam against each other. Warping keeps the
+ * remaining gap at `1 - swing` of a step however hard the swing is pushed.
+ *
+ * `unit` is how many steps make up half of a swung pair, and it is the setting
+ * that decides *what* swings:
+ *
+ *   unit 1  swings the 16ths — hip-hop, garage, boom bap
+ *   unit 2  swings the 8ths  — jazz, and what "swing" usually means
+ *
+ * At unit 2, swing 1/3 places the second eighth exactly two thirds through the
+ * beat: true triplet swing.
+ */
+export function swungStep(i, swing = 0, unit = 1) {
+  if (!swing || unit < 1) return i;
+
+  const pair = unit * 2;
+  const base = Math.floor(i / pair) * pair;
+  const o = i - base;
+
+  const warped = o < unit
+    ? o * (1 + swing)
+    : unit * (1 + swing) + (o - unit) * (1 - swing);
+
+  return base + warped;
 }
 
 /** Duration of one step in milliseconds. */

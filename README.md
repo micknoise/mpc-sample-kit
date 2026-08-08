@@ -74,8 +74,33 @@ Step strings, one per track. Written to be easy to read, edit and generate:
 }
 ```
 
-Swing delays every second step; musical values sit around 0.1–0.3. Humanisation
-is seeded, so a given `--seed` always renders identically.
+## Swing and feel
+
+Swing is a time warp within each pair of swing units, not a delay bolted onto
+alternate steps: the first half of the pair is stretched and the second half
+compressed by the same proportion. Delaying without compensating shoves swung
+notes towards the following step — at swing 0.5 on a 16th grid the gap closes
+far enough that neighbouring tracks flam. Warping keeps the remaining gap at
+`1 - swing` of a step however hard it is pushed.
+
+`swingUnit` decides *what* swings, and it matters more than the amount:
+
+| Unit | Swings | Styles |
+|---|---|---|
+| 1 | 16ths | hip-hop, boom bap, garage |
+| 2 | 8ths | jazz — and what "swing" usually means |
+
+At unit 2, swing `1/3` places the second eighth exactly two thirds through the
+beat: true triplet swing. Getting this wrong is audible rather than subtle — the
+jazz ride sits entirely on even steps, so 16th swing left it completely
+unswung while displacing the odd-step snare, producing lurch instead of swing.
+
+**Humanisation** splits in two. Most of `humanizeMs` is a per-step offset shared
+by every voice on that step — where the player put the beat — and only
+`limbSpread` (default 0.25) varies per voice. Applying the whole amount per
+event let hits meant to land together drift apart by twice `humanizeMs`, which
+the ear hears as a flam rather than as feel. Humanisation is seeded, so a given
+`--seed` always renders identically.
 
 ```bash
 node bin/mpc-seq.mjs patterns/boom-bap.json --bpm 96 --repeats 8

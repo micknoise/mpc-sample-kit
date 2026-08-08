@@ -6,7 +6,7 @@
 // opinion about rhythm.
 
 import { resolveNote, resolveVoices, DEFAULT_KIT, DEFAULT_VOICES } from './pads.mjs';
-import { stepMs, patternMs } from './pattern.mjs';
+import { stepMs, patternMs, swungStep } from './pattern.mjs';
 import { rng } from './random.mjs';
 import { metricWeight, effectiveWeight, applyWeight } from './dynamics.mjs';
 
@@ -22,6 +22,10 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
  * @param {number} [opts.channel]   MIDI channel, 1-16
  * @param {number} [opts.gateMs]    note length
  * @param {number} [opts.seed]      PRNG seed for humanisation
+ * @param {number} [opts.limbSpread] 0-1, share of humanizeMs that varies per
+ *                                   voice rather than being shared across the
+ *                                   step. Higher means looser limbs; too high
+ *                                   and simultaneous hits flam.
  * @param {number} [opts.startMs]   offset applied to every event
  * @returns {Array<{ms:number, bytes:number[]}>} ascending by ms
  */
@@ -31,6 +35,7 @@ export function render(p, opts = {}) {
     kit = DEFAULT_KIT,
     voices = DEFAULT_VOICES,
     voiceSpread = 0.35,
+    limbSpread = 0.25,
     channel = 1,
     gateMs = 40,
     seed = 1,
@@ -46,6 +51,29 @@ export function render(p, opts = {}) {
   const noteOff = 0x80 | (channel - 1);
   const step = stepMs(p);
   const loop = patternMs(p);
+
+  // Timing humanisation splits into two parts.
+  //
+  // Applying the whole amount per event let two voices meant to land *together*
+  // drift apart by twice humanizeMs — at free-jazz's 22ms that is a 44ms spread,
+  // which the ear hears as a flam rather than as feel. So most of the amount is
+  // a per-step offset shared by every voice on that step (where the player put
+  // the beat), and only `limbSpread` of it varies per voice (limbs not being
+  // perfectly synchronised). Intended-simultaneous hits stay tight while the
+  // groove still breathes.
+  //
+  // Drawn up front rather than inside the track loop so that every track agrees
+  // about each step regardless of iteration order.
+  const feel = [];
+  if (p.humanizeMs) {
+    for (let rep = 0; rep < repeats; rep++) {
+      const row = new Array(p.length);
+      for (let i = 0; i < p.length; i++) {
+        row[i] = (rand() * 2 - 1) * p.humanizeMs * (1 - limbSpread);
+      }
+      feel.push(row);
+    }
+  }
 
   // Resolve track names up front so a bad name fails before any sound is made.
   const notes = Object.fromEntries(
@@ -78,9 +106,10 @@ export function render(p, opts = {}) {
         const vel = steps[i];
         if (!vel) continue;
 
-        let t = startMs + rep * loop + i * step;
-        if (p.swing && i % 2 === 1) t += p.swing * step;
-        if (p.humanizeMs) t += (rand() * 2 - 1) * p.humanizeMs;
+        let t = startMs + rep * loop + swungStep(i, p.swing, p.swingUnit) * step;
+        if (p.humanizeMs) {
+          t += feel[rep][i] + (rand() * 2 - 1) * p.humanizeMs * limbSpread;
+        }
 
         // Metric dynamics first — that is the musical intent. Humanisation is
         // then jitter applied on top, not a substitute for it.

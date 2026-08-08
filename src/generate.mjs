@@ -146,7 +146,7 @@ export const STYLES = {
   // sampler triggered at any usable velocity turns that into four-on-the-floor
   // — which is the opposite of the intended effect.
   jazz: () => ({
-    bpm: 132, swing: 0.33, humanizeMs: 12, humanizeVel: 18,
+    bpm: 132, swing: 1 / 3, swingUnit: 2, humanizeMs: 12, humanizeVel: 18,
     dynamics: { depth: 0.5, conformity: 0.7 },
     tracks: {
       ride: 'x...o.o.x...o.o.',
@@ -160,7 +160,7 @@ export const STYLES = {
   // that accents land almost anywhere, and the timing is loose. Push --drift
   // up and this stops resembling a bar at all, which is the point.
   'free-jazz': () => ({
-    bpm: 148, swing: 0.28, humanizeMs: 22, humanizeVel: 30,
+    bpm: 148, swing: 0.28, swingUnit: 2, humanizeMs: 22, humanizeVel: 30,
     dynamics: { depth: 0.7, conformity: 0.35, anchorDownbeat: false },
     tracks: {
       ride: 'x.oo.x.o.oxo.x.o',

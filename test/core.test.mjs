@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { euclid, euclidTrack, randomTrack, rng, style, styleNames } from '../src/generate.mjs';
-import { pattern, parseSteps, stepMs, patternMs } from '../src/pattern.mjs';
+import { pattern, parseSteps, stepMs, patternMs, swungStep } from '../src/pattern.mjs';
 import { render } from '../src/schedule.mjs';
 import {
   rotate, thin, densify, upsample, ratchetPattern, decollide, dodgeLastBeat, fill, FILL_SHAPES,
@@ -552,6 +552,139 @@ test('locking is still available and still absolute', () => {
     const p = barPattern(base, bar, { drift: 1, fillEvery: 0, lock: ['kick'], seed: 2 });
     assert.deepEqual(p.tracks.kick, base.tracks.kick, `bar ${bar} drifted despite the lock`);
   }
+});
+
+test('swingUnit 2 swings the eighths, unit 1 the sixteenths', () => {
+  const s = 1 / 3;
+  // Unit 1: every odd sixteenth is displaced.
+  assert.equal(swungStep(0, s, 1), 0);
+  assert.ok(Math.abs(swungStep(1, s, 1) - 4 / 3) < 1e-9);
+  assert.equal(swungStep(2, s, 1), 2);
+
+  // Unit 2: the second eighth of each beat lands two thirds through it, which
+  // is what triplet swing means. The eighths on the beat stay put.
+  assert.equal(swungStep(0, s, 2), 0);
+  assert.ok(Math.abs(swungStep(2, s, 2) - 8 / 3) < 1e-9, 'second eighth at 2.667');
+  assert.equal(swungStep(4, s, 2), 4, 'next beat is unmoved');
+  assert.ok(Math.abs(swungStep(6, s, 2) - 20 / 3) < 1e-9);
+});
+
+test('swing never closes the gap to the next step below 1 - swing', () => {
+  // Displacing without compensating pushes swung notes into their neighbour and
+  // neighbouring tracks flam. The warp has to preserve a usable gap.
+  for (const unit of [1, 2, 4]) {
+    for (const swing of [0.1, 0.33, 0.5, 0.75, 0.9]) {
+      const pos = Array.from({ length: 32 }, (_, i) => swungStep(i, swing, unit));
+      for (let i = 1; i < pos.length; i++) {
+        const gap = pos[i] - pos[i - 1];
+        assert.ok(gap > 0, `unit ${unit} swing ${swing}: order broken at ${i}`);
+        assert.ok(
+          gap >= (1 - swing) - 1e-9,
+          `unit ${unit} swing ${swing}: gap ${gap.toFixed(3)} at step ${i}`,
+        );
+      }
+    }
+  }
+});
+
+test('swing preserves bar alignment', () => {
+  for (const unit of [1, 2]) {
+    for (const swing of [0.2, 1 / 3, 0.5]) {
+      for (const i of [0, 4, 8, 12, 16]) {
+        if (i % (unit * 2) === 0) {
+          assert.equal(swungStep(i, swing, unit), i, `step ${i} should stay put`);
+        }
+      }
+    }
+  }
+});
+
+test('swing zero and unit validation', () => {
+  assert.equal(swungStep(5, 0, 2), 5, 'no swing is identity');
+  assert.throws(() => pattern({ bpm: 120, swingUnit: 0, tracks: { kick: 'x' } }), RangeError);
+  assert.throws(() => pattern({ bpm: 120, swingUnit: 1.5, tracks: { kick: 'x' } }), RangeError);
+});
+
+test('jazz swings the eighths, and its ride actually moves', () => {
+  const p = pattern(style('jazz'));
+  assert.equal(p.swingUnit, 2, 'jazz must swing the eighths, not the sixteenths');
+
+  // The old behaviour left the ride untouched: every ride hit sits on an even
+  // step, and unit-1 swing only displaces odd ones.
+  const rideSteps = p.tracks.ride.flatMap((v, i) => (v ? [i] : []));
+  const moved = rideSteps.filter((i) => swungStep(i, p.swing, p.swingUnit) !== i);
+  assert.ok(moved.length > 0, 'the ride has to swing or it is not jazz');
+});
+
+test('no two jazz onsets land close enough to flam', () => {
+  const p = pattern({ ...style('jazz'), humanizeMs: 0 });
+  const step = stepMs(p);
+  const onsets = [...new Set(
+    render(p, { seed: 1 }).filter((e) => (e.bytes[0] & 0xf0) === 0x90).map((e) => e.ms),
+  )].sort((a, b) => a - b);
+
+  for (let i = 1; i < onsets.length; i++) {
+    const gap = onsets[i] - onsets[i - 1];
+    assert.ok(gap > 30, `onsets ${gap.toFixed(0)}ms apart reads as a flam, not a rhythm`);
+  }
+  assert.ok(onsets.length > 6, 'sanity: the pattern produced notes');
+  assert.ok(step > 0);
+});
+
+test('no style produces flams — hits land together or clearly apart', () => {
+  // Two onsets 12-35ms apart are the worst of both worlds: too far to hear as
+  // one hit, too close to hear as a rhythm. Applying humanizeMs independently
+  // per event caused exactly this, since voices meant to land together drifted
+  // apart by up to twice the amount.
+  for (const name of styleNames()) {
+    const base = pattern(style(name));
+    for (let seed = 1; seed <= 12; seed++) {
+      for (let bar = 0; bar < 8; bar++) {
+        const onsets = render(barPattern(base, bar, { seed, drift: 0.5, fillEvery: 4 }), { seed: seed + bar })
+          .filter((e) => (e.bytes[0] & 0xf0) === 0x90)
+          .map((e) => e.ms)
+          .sort((a, b) => a - b);
+
+        for (let i = 1; i < onsets.length; i++) {
+          const gap = onsets[i] - onsets[i - 1];
+          assert.ok(
+            gap < 12 || gap > 35,
+            `${name} bar ${bar} seed ${seed}: onsets ${gap.toFixed(1)}ms apart`,
+          );
+        }
+      }
+    }
+  }
+});
+
+test('humanisation keeps simultaneous hits together', () => {
+  const p = pattern({
+    bpm: 100, humanizeMs: 30,
+    tracks: { kick: 'x...x...', snare: 'x...x...', hat: 'x...x...' },
+  });
+  const byTime = render(p, { seed: 4 })
+    .filter((e) => (e.bytes[0] & 0xf0) === 0x90).map((e) => e.ms).sort((a, b) => a - b);
+
+  // Three voices on each of two steps: within a step they must stay tight even
+  // though humanizeMs is large.
+  const spread = Math.max(byTime[0], byTime[1], byTime[2]) - Math.min(byTime[0], byTime[1], byTime[2]);
+  assert.ok(spread < 30 * 0.5 + 1e-6, `simultaneous hits spread ${spread.toFixed(1)}ms`);
+  assert.ok(spread > 0, 'but not perfectly quantised either — limbs are independent');
+});
+
+test('limbSpread 0 makes simultaneous hits exactly simultaneous', () => {
+  const p = pattern({ bpm: 100, humanizeMs: 30, tracks: { kick: 'x...', snare: 'x...' } });
+  const on = render(p, { seed: 4, limbSpread: 0 })
+    .filter((e) => (e.bytes[0] & 0xf0) === 0x90).map((e) => e.ms);
+  assert.equal(on[0], on[1], 'no per-voice component means perfect alignment');
+});
+
+test('the shared feel still moves the beat around', () => {
+  const p = pattern({ bpm: 100, humanizeMs: 20, tracks: { kick: 'x...x...x...x...' } });
+  const on = render(p, { seed: 6 })
+    .filter((e) => (e.bytes[0] & 0xf0) === 0x90).map((e) => e.ms);
+  const grid = [0, 600, 1200, 1800];
+  assert.ok(on.some((t, i) => Math.abs(t - grid[i]) > 2), 'humanisation should not be a no-op');
 });
 
 test('randomTrack respects density bounds', () => {
