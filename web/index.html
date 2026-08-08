@@ -174,7 +174,8 @@
       <button id="play">Play</button>
       <button id="stop" class="ghost" disabled>Stop</button>
       <button id="reseed" class="ghost">New seed</button>
-      <button id="resetGrid" class="ghost" disabled>Reset grid</button>
+      <button id="resetGrid" class="ghost">Reset grid</button>
+      <button id="record" class="ghost">Record to MPC</button>
       <label style="margin:0">bar
         <input type="number" id="showBar" min="0" max="31" step="1" value="0" style="width:60px">
       </label>
@@ -182,6 +183,9 @@
     </div>
     <div class="scroll"><div class="grid" id="grid"></div></div>
     <p class="note" id="gridHint"></p>
+    <p class="note" id="recordHint">Record to MPC plays the phrase once in real time while arming the
+      MPC's own sequencer. Put the MPC on the track you want to capture first — its storage is not
+      writable from here, so recording is the only way in, and it takes as long as the phrase does.</p>
     <p class="note">Plays continuously until you press Stop, looping the phrase while it
       varies. Bar 1 as written; later bars drift. Bar height shows the velocity that will
       actually sound — metric dynamics make heavy beats louder, with
@@ -195,13 +199,13 @@ import { render } from '../src/schedule.mjs';
 import { style, styleNames, euclidTrack } from '../src/generate.mjs';
 import { barPattern } from '../src/arrange.mjs';
 import { FILL_SHAPES } from '../src/transform.mjs';
-import { clockEvents } from '../src/clock.mjs';
+import { clockEvents, recordArming } from '../src/clock.mjs';
 import { createTransport } from '../src/transport.mjs';
 import { resolveNote, resolveVoices, noteToPad, DEFAULT_KIT } from '../src/pads.mjs';
 
 const $ = (id) => document.getElementById(id);
 const statusEl = $('status');
-let access = null, output = null, playing = false;
+let access = null, output = null, playing = false, sysexOK = false, recording = false;
 
 function setStatus(msg, kind = '') { statusEl.textContent = msg; statusEl.className = kind; }
 
@@ -215,7 +219,15 @@ async function initMidi() {
     return;
   }
   try {
-    access = await navigator.requestMIDIAccess({ sysex: false });
+    // SysEx is only needed for MMC record-arming. If it is refused we still
+    // have full note and clock output, so fall back rather than failing.
+    try {
+      access = await navigator.requestMIDIAccess({ sysex: true });
+      sysexOK = true;
+    } catch {
+      access = await navigator.requestMIDIAccess({ sysex: false });
+      sysexOK = false;
+    }
     access.onstatechange = refreshPorts;
     refreshPorts();
   } catch (e) {
@@ -316,6 +328,7 @@ function clearEdits() {
   edits = null;
   $('resetGrid').disabled = true;
 }
+
 
 function currentPattern() {
   const spec = style($('style').value);
@@ -504,10 +517,62 @@ function play() {
   $('stop').disabled = false;
 }
 
+/**
+ * Captures the phrase into the MPC's own sequencer.
+ *
+ * There is no faster route: the MPC keeps its projects on an ext4 partition
+ * that macOS cannot write, so nothing can be dropped straight into its memory.
+ * What is possible is arming its sequencer over MMC and playing the phrase
+ * through in real time, which is what this does.
+ */
+function record() {
+  if (!output || playing || recording) return;
+  const bars = Math.max(1, +$('phrase').value);
+  const { arm, disarm } = recordArming();
+
+  if (sysexOK) for (const msg of arm) output.send(msg);
+  else output.send([0xfa]);        // no SysEx: arm the MPC by hand, we just start it
+
+  recording = true;
+  $('record').disabled = true;
+  $('play').disabled = true;
+
+  transport = createTransport({
+    output,
+    sendTransport: false,          // arming already sent START
+    maxBars: bars,
+    nextBar: (index) => {
+      const p = currentBar(currentPattern(), index);
+      const events = render(p, {
+        voiceSpread: +$('voice').value,
+        seed: +$('seed').value + index,
+        kit: currentKit(),
+      });
+      events.push(...clockEvents(p.bpm, patternMs(p), { transport: false }));
+      return { events, durationMs: patternMs(p) };
+    },
+    onBar: (n) => setStatus(`recording \u00b7 bar ${n} of ${bars}`, 'ok'),
+    onError: (e) => setStatus(e.message, 'bad'),
+    onEnd: () => {
+      for (const msg of (sysexOK ? disarm : [[0xfc]])) output.send(msg);
+      recording = false;
+      $('record').disabled = false;
+      $('play').disabled = false;
+      setStatus(`recorded ${bars} bars \u2014 stop and save on the MPC`, 'ok');
+    },
+  });
+  transport.play();
+}
+
 function stop() {
   if (!transport) return;
   transport.stop();
   playing = false;
+  if (recording) {
+    for (const msg of recordArming().disarm) if (sysexOK) output.send(msg);
+    recording = false;
+    $('record').disabled = false;
+  }
   $('play').disabled = false;
   $('stop').disabled = true;
   setStatus(output ? `connected: ${output.name}` : 'idle', 'ok');
@@ -574,6 +639,7 @@ $('kitPreset').addEventListener('change', () => {
 $('kitSpec').addEventListener('input', refresh);
 $('euclid').addEventListener('change', clearEdits);
 $('resetGrid').addEventListener('click', () => { clearEdits(); refresh(); });
+$('record').addEventListener('click', record);
 $('play').addEventListener('click', play);
 $('stop').addEventListener('click', stop);
 $('reseed').addEventListener('click', () => {

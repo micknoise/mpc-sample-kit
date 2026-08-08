@@ -29,6 +29,8 @@ const TRANSPORT_START = [0xfa];
  * @param {number}   [opts.leadMs]        delay before the first note
  * @param {number}   [opts.maxBarsPerTick] guard against runaway loops
  * @param {boolean}  [opts.sendTransport] emit MIDI start/stop
+ * @param {number}   [opts.maxBars]      stop after this many bars (0 = forever)
+ * @param {function} [opts.onEnd]        called once a bounded run finishes
  * @param {function} [opts.now]           clock, defaults to performance.now
  * @param {function} [opts.schedule]      setInterval
  * @param {function} [opts.unschedule]    clearInterval
@@ -44,6 +46,8 @@ export function createTransport(opts) {
     leadMs = 150,
     maxBarsPerTick = 8,
     sendTransport = false,
+    maxBars = 0,
+    onEnd = () => {},
     now = () => performance.now(),
     schedule = setInterval,
     unschedule = clearInterval,
@@ -59,6 +63,16 @@ export function createTransport(opts) {
 
   function tick() {
     if (!playing) return;
+
+    // A bounded run — used when capturing a fixed number of bars into the MPC's
+    // sequencer. Once every bar is queued we stop generating but keep the
+    // transport alive until the last one has actually played out, otherwise the
+    // stop would cut off the tail we just scheduled.
+    if (maxBars && barIndex >= maxBars) {
+      if (now() >= startTime + playhead) { stop(); onEnd(); }
+      return;
+    }
+
     let generated = 0;
 
     while (startTime + playhead < now() + lookaheadMs && generated < maxBarsPerTick) {

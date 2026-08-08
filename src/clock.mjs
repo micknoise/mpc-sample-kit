@@ -52,6 +52,38 @@ export function withClock(events, bpm, durationMs, opts = {}) {
   return merged;
 }
 
+// MIDI Machine Control. These are SysEx, so a browser must have asked for
+// `requestMIDIAccess({ sysex: true })` or they will be rejected.
+//
+// Device 0x7F addresses everything listening. The MPC only acts on these if
+// "Receive MMC" is enabled in its MIDI/Sync preferences.
+const mmc = (cmd, device = 0x7f) => [0xf0, 0x7f, device, 0x06, cmd, 0xf7];
+
+export const MMC = {
+  stop: (d) => mmc(0x01, d),
+  play: (d) => mmc(0x02, d),
+  deferredPlay: (d) => mmc(0x03, d),
+  recordStrobe: (d) => mmc(0x06, d),   // punch in
+  recordExit: (d) => mmc(0x07, d),     // punch out
+  reset: (d) => mmc(0x0d, d),
+};
+
+/**
+ * The message sequence for capturing a phrase into the MPC's own sequencer.
+ *
+ * The MPC records what it hears in real time — there is no faster path, since
+ * its storage is on an ext4 partition macOS cannot write. So a "dump" is
+ * really an arm, a play-through, and a stop.
+ *
+ * @returns {{ arm: number[][], disarm: number[][] }}
+ */
+export function recordArming(device = 0x7f) {
+  return {
+    arm: [MMC.recordStrobe(device), [START]],
+    disarm: [[STOP], MMC.recordExit(device), MMC.stop(device)],
+  };
+}
+
 /** A bare transport stop, for panicking out of a running sequence. */
 export function stopAll(channel = 1) {
   return [

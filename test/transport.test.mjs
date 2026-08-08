@@ -143,6 +143,41 @@ test('events are queued at absolute times that advance monotonically', () => {
   assert.equal(onsets[1] - onsets[0], 1000, 'bars are spaced by their duration');
 });
 
+test('maxBars stops after the requested bars, once they have played out', () => {
+  let ended = 0;
+  const h = harness({ maxBars: 4, onEnd: () => { ended++; } });
+  h.t.play();
+
+  h.advance(500);
+  assert.equal(h.t.playing, true, 'still running while bars remain');
+
+  for (let i = 0; i < 12; i++) h.advance(500);
+  assert.equal(h.t.bar, 4, 'generated exactly the requested bars');
+  assert.equal(h.t.playing, false, 'stopped itself');
+  assert.equal(ended, 1, 'onEnd fired once');
+
+  for (let i = 0; i < 5; i++) h.advance(500);
+  assert.equal(ended, 1, 'and not again');
+});
+
+test('maxBars waits for the tail rather than cutting it off', () => {
+  // Bars are 1000ms and the look-ahead is 400ms, so the second bar is not
+  // queued until the clock is within 400ms of it.
+  const h = harness({ maxBars: 2 });
+  h.t.play();
+  assert.equal(h.t.bar, 1, 'only the first bar fits in the look-ahead');
+
+  h.advance(1200);
+  assert.equal(h.t.bar, 2, 'second and final bar now queued');
+  assert.equal(h.t.playing, true, 'still playing — the tail has not sounded yet');
+
+  h.advance(500);           // clock 1700, last bar due at 2150
+  assert.equal(h.t.playing, true, 'must not cut the final bar short');
+
+  h.advance(600);           // clock 2300
+  assert.equal(h.t.playing, false, 'stops once the last bar has played out');
+});
+
 test('a burst of missed ticks is bounded by maxBarsPerTick', () => {
   const h = harness({ maxBarsPerTick: 3 });
   h.t.play();

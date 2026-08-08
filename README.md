@@ -328,6 +328,35 @@ moving a control takes effect on the next bar instead of the next press of Play.
 The step grid shows the velocities that will actually sound, including
 substituted voices — not the pattern as written.
 
+## Recording into the MPC
+
+There is no way to drop a pattern straight into the unit's memory: projects live
+on the ext4 partition macOS cannot write. What *is* possible is arming the MPC's
+own sequencer over MMC and playing the phrase through in real time.
+
+**Record to MPC** in the browser app does that — it arms, plays the phrase once
+with clock, then punches out. It takes as long as the phrase does, and the MPC
+records what it hears, so humanised timing is captured unless the MPC is
+quantising on input.
+
+Two prerequisites on the device: **Receive MMC** enabled under MIDI/Sync, and
+the track you want to capture selected. Without SysEx permission in the browser
+the arming step is skipped and only transport start is sent, so arm the MPC by
+hand.
+
+## Running from an iPhone
+
+The page works on an iPhone, but **not in Safari** — WebKit has never shipped
+Web MIDI, citing fingerprinting, and every iOS browser is forced onto WebKit, so
+Chrome and Edge on iOS inherit the gap.
+
+The route that does work is a third-party browser that bundles its own MIDI
+plumbing — [Web MIDI Browser](https://apps.apple.com/us/app/web-midi-browser/id953846217)
+or MIDIWeb Browser. Open the GitHub Pages URL in one of those and it drives the
+MPC over USB-C or Bluetooth MIDI like any other class-compliant device. An
+iPhone 15 or later can host USB MIDI directly, and the MPC runs on its own
+battery so it does not need bus power.
+
 ## Tests
 
 ```bash
