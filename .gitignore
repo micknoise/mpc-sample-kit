@@ -1,0 +1,5 @@
+tools/midi/mpcmidi
+*.o
+.DS_Store
+node_modules/
+captures/
