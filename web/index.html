@@ -68,7 +68,8 @@
 <body>
 <div class="wrap">
   <h1>MPC Sample — pattern control</h1>
-  <p class="sub">Web MIDI. Chromium only: Safari and Firefox do not implement the API.</p>
+  <p class="sub">Web MIDI. Not Safari or Firefox, which do not implement it. On iPhone use a
+    browser that bundles its own MIDI, such as Web MIDI Browser.</p>
 
   <div class="panel">
     <div class="row">
@@ -201,11 +202,12 @@ import { barPattern } from '../src/arrange.mjs';
 import { FILL_SHAPES } from '../src/transform.mjs';
 import { clockEvents, recordArming } from '../src/clock.mjs';
 import { createTransport } from '../src/transport.mjs';
+import { listPorts, findPort, wrapOutput, openAccess, describePorts } from '../src/webmidi.mjs';
 import { resolveNote, resolveVoices, noteToPad, DEFAULT_KIT } from '../src/pads.mjs';
 
 const $ = (id) => document.getElementById(id);
 const statusEl = $('status');
-let access = null, output = null, playing = false, sysexOK = false, recording = false;
+let access = null, output = null, playing = false, sysexOK = false, recording = false, legacyMidi = false;
 
 function setStatus(msg, kind = '') { statusEl.textContent = msg; statusEl.className = kind; }
 
@@ -219,16 +221,11 @@ async function initMidi() {
     return;
   }
   try {
-    // SysEx is only needed for MMC record-arming. If it is refused we still
-    // have full note and clock output, so fall back rather than failing.
-    try {
-      access = await navigator.requestMIDIAccess({ sysex: true });
-      sysexOK = true;
-    } catch {
-      access = await navigator.requestMIDIAccess({ sysex: false });
-      sysexOK = false;
-    }
-    access.onstatechange = refreshPorts;
+    // SysEx is only needed for MMC record-arming, so a refusal must not take
+    // note output down with it.
+    ({ access, sysex: sysexOK, legacy: legacyMidi } =
+      await openAccess((opts) => navigator.requestMIDIAccess(opts)));
+    try { access.onstatechange = refreshPorts; } catch { /* not all shims have it */ }
     refreshPorts();
   } catch (e) {
     setStatus(`MIDI access denied: ${e.message}`, 'bad');
@@ -238,29 +235,32 @@ async function initMidi() {
 
 function refreshPorts() {
   const sel = $('port');
-  const outs = [...access.outputs.values()];
+  const outs = listPorts(access.outputs);
   sel.innerHTML = '';
   if (!outs.length) {
     sel.innerHTML = '<option>no outputs found</option>';
-    setStatus('no MIDI outputs — is the MPC on USB MIDI, not disk mode?', 'bad');
+    setStatus(
+      `no MIDI outputs — is the MPC on USB MIDI, not disk mode? [${describePorts(access.outputs)}]`,
+      'bad',
+    );
     $('play').disabled = true;
     return;
   }
   for (const out of outs) {
     const opt = document.createElement('option');
-    opt.value = out.id; opt.textContent = out.name;
+    opt.value = String(out.id); opt.textContent = out.name ?? String(out.id);
     sel.appendChild(opt);
   }
-  const mpc = outs.find((o) => /mpc/i.test(o.name));
+  const mpc = outs.find((o) => /mpc/i.test(o.name ?? ''));
   sel.value = (mpc ?? outs[0]).id;
-  output = access.outputs.get(sel.value);
+  output = wrapOutput(findPort(access.outputs, sel.value), { legacy: legacyMidi });
   $('play').disabled = false;
-  setStatus(`connected: ${output.name}`, 'ok');
+  setStatus(`connected: ${output.name}${legacyMidi ? ' (software timing)' : ''}`, 'ok');
 }
 
 $('port').addEventListener('change', (e) => {
-  output = access.outputs.get(e.target.value);
-  setStatus(`connected: ${output.name}`, 'ok');
+  output = wrapOutput(findPort(access.outputs, e.target.value), { legacy: legacyMidi });
+  setStatus(`connected: ${output.name}${legacyMidi ? ' (software timing)' : ''}`, 'ok');
 });
 
 // ------------------------------------------------------------- build pattern

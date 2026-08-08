@@ -357,6 +357,26 @@ MPC over USB-C or Bluetooth MIDI like any other class-compliant device. An
 iPhone 15 or later can host USB MIDI directly, and the MPC runs on its own
 battery so it does not need bus power.
 
+Those browsers implement an older draft of the API, so
+[`src/webmidi.mjs`](src/webmidi.mjs) normalises the differences:
+
+- **Port collections.** The spec settled on Maplike `access.outputs`; older
+  implementations use arrays or plain objects. Spreading `outputs.values()`
+  throws there, and the failure surfaces as "MIDI access denied" — which points
+  at permissions rather than at the real cause.
+- **Scheduled send.** Compliant implementations queue a message for a future
+  timestamp. Where that is not supported, delivery falls back to timers, so a
+  bar does not collapse onto a single instant. `clear()` cancels those timers,
+  keeping Stop working.
+- **SysEx.** Only needed for MMC record-arming. Some implementations reject the
+  option outright rather than denying permission, so a refusal must not take
+  note output down with it.
+
+Detection is by feature, and a compliant browser takes exactly the path it did
+before — Chrome behaviour is unchanged. If ports still cannot be found, the
+status line reports the shape of the collection it was given, which is the
+useful thing to send back.
+
 ## Tests
 
 ```bash
