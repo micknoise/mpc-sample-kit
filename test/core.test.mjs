@@ -2,12 +2,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { euclid, euclidTrack, randomTrack, rng } from '../src/generate.mjs';
+import { euclid, euclidTrack, randomTrack, rng, style, styleNames } from '../src/generate.mjs';
 import { pattern, parseSteps, stepMs, patternMs } from '../src/pattern.mjs';
 import { render } from '../src/schedule.mjs';
-import { rotate, thin, densify, upsample, ratchetPattern } from '../src/transform.mjs';
+import { rotate, thin, densify, upsample, ratchetPattern, decollide } from '../src/transform.mjs';
 import { arrange, arrangementMs, evolve, chain } from '../src/arrange.mjs';
-import { padToNote, noteToPad, resolveNote } from '../src/pads.mjs';
+import { padToNote, noteToPad, resolveNote, resolveVoices } from '../src/pads.mjs';
 import { metricWeight, effectiveWeight, applyWeight } from '../src/dynamics.mjs';
 import { clockEvents, withClock, CLOCK, START, STOP } from '../src/clock.mjs';
 
@@ -231,6 +231,87 @@ test('withClock keeps events ordered and start ahead of the first note', () => {
   const merged = withClock(render(p, {}), 120, patternMs(p));
   for (let i = 1; i < merged.length; i++) assert.ok(merged[i].ms >= merged[i - 1].ms);
   assert.equal(merged[0].bytes[0], START, 'transport start leads');
+});
+
+test('voice substitution uses alternates, and only when asked', () => {
+  const p = pattern({ bpm: 120, tracks: { snare: 'oooooooooooooooo' } });
+  const notesFor = (voiceSpread) => [...new Set(
+    render(p, { voiceSpread, seed: 4 })
+      .filter((e) => (e.bytes[0] & 0xf0) === 0x90).map((e) => e.bytes[1]),
+  )].sort((a, b) => a - b);
+
+  assert.deepEqual(notesFor(0), [37], 'spread 0 always plays the primary');
+  assert.ok(notesFor(0.6).length > 1, 'spread substitutes rim and clap');
+  assert.ok(notesFor(0.6).includes(37), 'primary still dominates');
+});
+
+test('note-off always matches the note that was struck', () => {
+  const p = pattern({ bpm: 120, tracks: { snare: 'oooooooo' } });
+  const ev = render(p, { voiceSpread: 1, seed: 8 });
+  const open = new Map();
+  for (const e of ev) {
+    const [status, note] = e.bytes;
+    if ((status & 0xf0) === 0x90) open.set(note, (open.get(note) ?? 0) + 1);
+    else open.set(note, (open.get(note) ?? 0) - 1);
+  }
+  for (const [note, balance] of open) assert.equal(balance, 0, `note ${note} left hanging`);
+});
+
+test('voices fall back to the primary for unknown roles and thin kits', () => {
+  assert.deepEqual(resolveVoices('kick'), [36], 'kick has no alternates');
+  assert.deepEqual(resolveVoices('ride'), [padToNote(12)], 'role absent from the voice map');
+  // A kit lacking the alternates must not break.
+  assert.deepEqual(resolveVoices('snare', { snare: 2 }), [37]);
+  // An explicit array in the kit wins outright.
+  assert.deepEqual(resolveVoices('snare', { snare: [2, 9, 10] }), [37, 44, 45]);
+});
+
+test('decollide moves an on-beat snare off the kick', () => {
+  const p = pattern({ bpm: 90, tracks: { kick: 'x...x...x...x...', snare: 'x...x...x...x...' } });
+  const d = decollide(p, { strength: 1, seed: 2 });
+  for (let i = 0; i < d.length; i++) {
+    assert.ok(!(d.tracks.kick[i] && d.tracks.snare[i]), `still colliding at step ${i}`);
+  }
+  assert.equal(d.tracks.snare.filter(Boolean).length, 4, 'hits are moved, not deleted');
+});
+
+test('decollide leaves off-beat coincidences and four-on-the-floor claps alone', () => {
+  const offbeat = pattern({ bpm: 90, tracks: { kick: '..x.....', snare: '..x.....' } });
+  assert.deepEqual(
+    decollide(offbeat, { strength: 1 }).tracks.snare, offbeat.tracks.snare,
+    'off-beat collisions are usually deliberate',
+  );
+  const house = pattern({ bpm: 124, tracks: { kick: 'x...x...', clap: 'x...x...' } });
+  assert.deepEqual(
+    decollide(house, { strength: 1 }).tracks.clap, house.tracks.clap,
+    'clap is not in the default pair',
+  );
+});
+
+test('decollide at strength 0 is a no-op', () => {
+  const p = pattern({ bpm: 90, tracks: { kick: 'x...', snare: 'x...' } });
+  assert.equal(decollide(p, { strength: 0 }), p);
+});
+
+test('jazz styles exist and free-jazz is deliberately unanchored', () => {
+  const names = styleNames();
+  assert.ok(names.includes('jazz'));
+  assert.ok(names.includes('free-jazz'));
+  const free = pattern(style('free-jazz'));
+  assert.equal(free.dynamics.anchorDownbeat, false);
+  assert.ok(free.dynamics.conformity < 0.5, 'accents land almost anywhere');
+  assert.ok(pattern(style('jazz')).swing > 0.25, 'jazz is properly swung');
+});
+
+test('every style produces a renderable pattern', () => {
+  for (const name of styleNames()) {
+    const p = pattern(style(name));
+    const ev = render(p, { seed: 1 });
+    assert.ok(ev.length > 0, `${name} produced no events`);
+    for (const e of ev) {
+      assert.ok(e.bytes[1] >= 36 && e.bytes[1] <= 51, `${name}: note ${e.bytes[1]} outside bank A`);
+    }
+  }
 });
 
 test('randomTrack respects density bounds', () => {

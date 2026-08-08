@@ -111,12 +111,20 @@
         <select id="anchor"><option value="1">yes</option><option value="0">no — dissolve the pulse</option></select>
       </div>
       <div class="field">
-        <label for="bars">Bars <span class="val" id="barsv"></span></label>
-        <input type="range" id="bars" min="1" max="32" step="1" value="8">
+        <label for="phrase">Phrase bars <span class="val" id="phrasev"></span></label>
+        <input type="range" id="phrase" min="1" max="32" step="1" value="8">
       </div>
       <div class="field">
         <label for="drift">Drift <span class="val" id="driftv"></span></label>
         <input type="range" id="drift" min="0" max="1" step="0.05" value="0.3">
+      </div>
+      <div class="field">
+        <label for="voice">Voice spread <span class="val" id="voicev"></span></label>
+        <input type="range" id="voice" min="0" max="1" step="0.05" value="0.35">
+      </div>
+      <div class="field">
+        <label for="decollide">Un-stack kick/snare <span class="val" id="decollidev"></span></label>
+        <input type="range" id="decollide" min="0" max="1" step="0.05" value="0.6">
       </div>
       <div class="field">
         <label for="fillEvery">Fill every</label>
@@ -137,9 +145,10 @@
       <label style="margin:0"><input type="checkbox" id="sync"> send MIDI clock</label>
     </div>
     <div class="scroll"><div class="grid" id="grid"></div></div>
-    <p class="note">Bar 1 as written; later bars vary. Bar height shows velocity — metric
-      dynamics make heavy beats louder, with <span class="val" id="syncPct"></span> of hits
-      displaced onto weak steps.</p>
+    <p class="note">Plays continuously until you press Stop, looping the phrase while it
+      varies. Bar 1 as written; later bars drift. Bar height shows the velocity that will
+      actually sound — metric dynamics make heavy beats louder, with
+      <span class="val" id="syncPct"></span> of hits displaced onto weak steps.</p>
   </div>
 </div>
 
@@ -147,13 +156,14 @@
 import { pattern, patternMs } from '../src/pattern.mjs';
 import { render } from '../src/schedule.mjs';
 import { style, styleNames, euclidTrack } from '../src/generate.mjs';
-import { evolve, arrange, arrangementMs } from '../src/arrange.mjs';
-import { withClock } from '../src/clock.mjs';
-import { resolveNote, DEFAULT_KIT } from '../src/pads.mjs';
+import { barPattern } from '../src/arrange.mjs';
+import { clockEvents } from '../src/clock.mjs';
+import { createTransport } from '../src/transport.mjs';
+import { resolveNote, resolveVoices, DEFAULT_KIT } from '../src/pads.mjs';
 
 const $ = (id) => document.getElementById(id);
 const statusEl = $('status');
-let access = null, output = null, playing = false, stopTimer = null;
+let access = null, output = null, playing = false;
 
 function setStatus(msg, kind = '') { statusEl.textContent = msg; statusEl.className = kind; }
 
@@ -229,13 +239,14 @@ function currentPattern() {
   return pattern(spec);
 }
 
-function currentSections(p) {
-  return evolve(p, {
-    bars: +$('bars').value,
+function currentBar(p, n) {
+  const phrase = Math.max(1, +$('phrase').value);
+  return barPattern(p, n % phrase, {
     drift: +$('drift').value,
     fillEvery: +$('fillEvery').value,
     lock: ['kick'],
     seed: +$('seed').value,
+    decollideStrength: +$('decollide').value,
   });
 }
 
@@ -252,11 +263,20 @@ function currentSections(p) {
  */
 function shapedTracks(p, seed) {
   const flat = { ...p, swing: 0 };
-  const events = render(flat, { kit: undefined, seed, repeats: 1 });
+  const events = render(flat, { seed, repeats: 1, voiceSpread: +$('voice').value });
   const step = patternMs(p) / p.length;
 
+  // Map every note a track might sound on, not just its primary — otherwise
+  // hits played on a substituted voice (rim, clap, open hat) vanish from the
+  // display. Primaries are claimed first so that a pattern with both a "snare"
+  // and a "rim" track keeps them distinct.
   const byNote = {};
   for (const name of Object.keys(p.tracks)) byNote[resolveNote(name, DEFAULT_KIT)] = name;
+  for (const name of Object.keys(p.tracks)) {
+    for (const note of resolveVoices(name, DEFAULT_KIT)) {
+      if (!(note in byNote)) byNote[note] = name;
+    }
+  }
 
   const out = Object.fromEntries(
     Object.entries(p.tracks).map(([name, steps]) => [name, new Array(steps.length).fill(0)]),
@@ -301,44 +321,47 @@ function drawGrid(p) {
 
 // ------------------------------------------------------------------ playback
 
-function play() {
-  if (!output) return;
-  let p, sections, events, totalMs;
-  try {
-    p = currentPattern();
-    sections = currentSections(p);
-    events = arrange(sections, { seed: +$('seed').value });
-    totalMs = arrangementMs(sections);
-    if ($('sync').checked) events = withClock(events, p.bpm, totalMs);
-  } catch (e) {
-    setStatus(e.message, 'bad');
-    return;
-  }
+// Playback runs through the shared look-ahead transport in src/transport.mjs,
+// which is unit-tested against a fake clock and MIDI output.
 
-  // Web MIDI timestamps share the performance.now() timebase, so the browser
-  // handles delivery — same principle as the CoreMIDI path on the desktop.
-  const t0 = performance.now() + 120;
-  for (const e of events) output.send(e.bytes, t0 + e.ms);
+let transport = null;
 
-  playing = true;
-  $('play').disabled = true; $('stop').disabled = false;
-  setStatus(`playing ${sections.length} bars · ${events.length} events · ${(totalMs / 1000).toFixed(1)}s`, 'ok');
-  stopTimer = setTimeout(finished, totalMs + 400);
+function buildTransport() {
+  return createTransport({
+    output,
+    sendTransport: $('sync').checked,
+    nextBar: (index) => {
+      const p = currentBar(currentPattern(), index);
+      const events = render(p, {
+        voiceSpread: +$('voice').value,
+        seed: +$('seed').value + index,
+      });
+      if ($('sync').checked) {
+        events.push(...clockEvents(p.bpm, patternMs(p), { transport: false }));
+      }
+      return { events, durationMs: patternMs(p) };
+    },
+    onBar: (n) => setStatus(`playing \u00b7 bar ${n}`, 'ok'),
+    onError: (e) => setStatus(e.message, 'bad'),
+  });
 }
 
-function finished() {
-  playing = false;
-  $('play').disabled = false; $('stop').disabled = true;
-  setStatus(output ? `connected: ${output.name}` : 'idle', 'ok');
+function play() {
+  if (!output || playing) return;
+  transport = buildTransport();
+  if (!transport.play()) return;
+  playing = true;
+  $('play').disabled = true;
+  $('stop').disabled = false;
 }
 
 function stop() {
-  if (!output) return;
-  clearTimeout(stopTimer);
-  if (output.clear) output.clear();          // drop anything still queued
-  output.send([0xb0, 0x7b, 0x00]);           // all notes off
-  output.send([0xfc]);                       // transport stop
-  finished();
+  if (!transport) return;
+  transport.stop();
+  playing = false;
+  $('play').disabled = false;
+  $('stop').disabled = true;
+  setStatus(output ? `connected: ${output.name}` : 'idle', 'ok');
 }
 
 // -------------------------------------------------------------------- wiring
@@ -362,15 +385,20 @@ function refresh() {
   $('swingv').textContent = (+$('swing').value).toFixed(2);
   $('dynv').textContent = (+$('dyn').value).toFixed(2);
   $('confv').textContent = (+$('conf').value).toFixed(2);
-  $('barsv').textContent = $('bars').value;
+  $('phrasev').textContent = $('phrase').value;
+  $('voicev').textContent = (+$('voice').value).toFixed(2);
+  $('decollidev').textContent = (+$('decollide').value).toFixed(2);
   $('driftv').textContent = (+$('drift').value).toFixed(2);
   $('syncPct').textContent = `${Math.round((1 - +$('conf').value) * 100)}%`;
-  try { drawGrid(currentPattern()); setStatus(output ? `connected: ${output.name}` : 'idle', output ? 'ok' : ''); }
+  try {
+    drawGrid(currentBar(currentPattern(), 0));
+    if (!playing) setStatus(output ? `connected: ${output.name}` : 'idle', output ? 'ok' : '');
+  }
   catch (e) { setStatus(e.message, 'bad'); }
 }
 
 $('style').addEventListener('change', syncFromStyle);
-for (const id of ['bpm', 'swing', 'dyn', 'conf', 'bars', 'drift', 'fillEvery', 'seed', 'anchor', 'euclid']) {
+for (const id of ['bpm', 'swing', 'dyn', 'conf', 'phrase', 'drift', 'voice', 'decollide', 'fillEvery', 'seed', 'anchor', 'euclid']) {
   $(id).addEventListener('input', refresh);
 }
 $('play').addEventListener('click', play);

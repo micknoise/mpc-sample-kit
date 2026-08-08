@@ -16,7 +16,7 @@ import { dirname, resolve } from 'node:path';
 import { pattern, patternMs } from '../src/pattern.mjs';
 import { render, toMpcmidi } from '../src/schedule.mjs';
 import { style, styleNames, euclidTrack } from '../src/generate.mjs';
-import { ratchetPattern } from '../src/transform.mjs';
+import { ratchetPattern, decollide } from '../src/transform.mjs';
 import { arrange, arrangementMs, evolve } from '../src/arrange.mjs';
 import { withClock } from '../src/clock.mjs';
 import { DEFAULT_KIT } from '../src/pads.mjs';
@@ -41,6 +41,13 @@ dynamics
   --conformity C       0-1, proportion of hits following the metre (default 0.8);
                        the remainder are displaced onto weak steps
   --no-anchor          allow beat 1 itself to be de-accented, dissolving the pulse
+
+voicing
+  --voice-spread S     0-1, how often a hit uses an alternate voice such as a
+                       rim or clap instead of the main drum (default 0.35).
+                       Quieter hits substitute more often.
+  --decollide S        0-1, how often a kick and snare landing on the same beat
+                       is broken up by nudging the snare (default 0.6)
 
 kit and sync
   --kit FILE|SPEC      role->pad map, a .json file or "kick=1,snare=4,hat=9"
@@ -74,6 +81,8 @@ function parseArgs(argv) {
       case '--no-anchor': o.anchorDownbeat = false; break;
       case '--kit': o.kit = argv[++i]; break;
       case '--dynamics': o.dynamics = num(argv[++i], a); break;
+      case '--voice-spread': o.voiceSpread = num(argv[++i], a); break;
+      case '--decollide': o.decollide = num(argv[++i], a); break;
       case '--conformity': o.conformity = num(argv[++i], a); break;
       case '--style': o.style = argv[++i]; break;
       case '--euclid': o.euclid = argv[++i]; break;
@@ -160,10 +169,12 @@ try {
   const seed = o.seed ?? spec.seed ?? 1;
   const renderOpts = {
     kit: spec.kit,
+    voiceSpread: o.voiceSpread ?? spec.voiceSpread ?? 0.35,
     channel: spec.channel ?? 1,
     gateMs: spec.gateMs ?? 40,
     seed,
   };
+  const decollideStrength = o.decollide ?? spec.decollide ?? 0.6;
 
   let events, totalMs, label;
   if (o.bars) {
@@ -172,6 +183,7 @@ try {
       drift: o.drift ?? 0.25,
       fillEvery: o.fillEvery ?? 4,
       lock: o.lock ?? ['kick'],
+      decollideStrength,
       seed,
     });
     events = arrange(sections, renderOpts);
@@ -179,7 +191,7 @@ try {
     label = `${o.bars} bars evolving (drift ${o.drift ?? 0.25}, fill every ${o.fillEvery ?? 4})`;
   } else {
     const repeats = o.repeats ?? spec.repeats ?? 1;
-    events = render(p, { ...renderOpts, repeats });
+    events = render(decollide(p, { strength: decollideStrength, seed }), { ...renderOpts, repeats });
     totalMs = patternMs(p) * repeats;
     label = `${repeats}x loop`;
   }

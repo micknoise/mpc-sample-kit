@@ -91,6 +91,16 @@ node bin/mpc-seq.mjs --list-styles
 node bin/mpc-seq.mjs --style garage --bars 8
 ```
 
+`jazz` is a swung ride with the classic skip note, hi-hat closing on 2 and 4,
+kick feathered underneath rather than driving, and a snare that comps against
+the ride instead of marking the backbeat. `free-jazz` goes further out: the
+pulse is unanchored and conformity is low enough that accents land almost
+anywhere. Push `--drift` up and it stops resembling a bar at all.
+
+```bash
+node bin/mpc-seq.mjs --style free-jazz --bars 16 --drift 0.85 --conformity 0.3
+```
+
 Euclidean rhythms distribute pulses as evenly as possible across a bar, which
 is where a lot of the interesting material comes from. `name=pulses/steps`,
 optionally `@rotation`:
@@ -154,6 +164,39 @@ exemption when losing the downbeat is the point.
 node bin/mpc-seq.mjs --style boom-bap --bars 8 --dynamics 0.6 --conformity 0.75
 ```
 
+## Voicing
+
+Two things that make programmed drums sound programmed, both handled here.
+
+**Snare substitution.** A drummer never hits the same spot on the same drum
+twice. `--voice-spread` substitutes a rim, clap or open hat for the primary
+voice, biased towards *quieter* hits — ghost notes are where a player reaches
+for the rim, while accents land on the drum itself. Making it velocity-dependent
+rather than uniform is most of what stops it sounding like a random sample
+swapper.
+
+**Un-stacking kick and snare.** Kick and snare landing on the same downbeat is
+the most tiring thing a programmed pattern does: the transients fuse into one
+thud and the groove loses its conversation. `--decollide` nudges the snare a
+sixteenth late instead — late reads as laid-back, early reads as a mistake.
+
+Only *on-beat* collisions are treated; off-beat coincidences are usually
+deliberate, and four-on-the-floor styles depend on kick and clap landing
+together, so `clap` is deliberately not in the default pairing.
+
+| Flag | Effect |
+|---|---|
+| `--voice-spread S` | how often an alternate voice is used (default 0.35) |
+| `--decollide S` | how often on-beat kick/snare collisions are broken up (default 0.6) |
+
+Both are applied per bar, since variation and fills can create fresh collisions
+that were not in the original.
+
+Alternates live in `DEFAULT_VOICES` in [`src/pads.mjs`](src/pads.mjs), and a kit
+entry may be an array (`"snare": [2, 9, 10]`) to set them explicitly. Roles
+whose alternates are missing from the kit fall back to the primary, so a custom
+kit never breaks playback.
+
 ## Kits
 
 The role→pad map in [`src/pads.mjs`](src/pads.mjs) is a convention, not
@@ -205,6 +248,17 @@ python3 -m http.server 8765
 
 then open `http://localhost:8765/web/`. Chromium only; Safari and Firefox do
 not implement Web MIDI.
+
+**Play runs until you press Stop.** Playback is a rolling look-ahead
+([`src/transport.mjs`](src/transport.mjs)) that queues a few hundred
+milliseconds at a time rather than the whole phrase up front. Web MIDI cannot
+un-send a timestamped message, so queueing everything made Stop impossible —
+the notes had already gone. Queueing incrementally means Stop is immediate,
+playback can run indefinitely, Play cannot stack a second stream on top, and
+moving a control takes effect on the next bar instead of the next press of Play.
+
+The step grid shows the velocities that will actually sound, including
+substituted voices — not the pattern as written.
 
 ## Tests
 

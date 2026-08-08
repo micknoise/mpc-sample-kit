@@ -117,6 +117,51 @@ export function vary(p, opts = {}) {
 }
 
 /**
+ * Stops two tracks landing together on the beat.
+ *
+ * Kick and snare hitting the same downbeat is the most tiring thing a
+ * programmed pattern does — the two transients fuse into one thud and the
+ * groove loses its conversation. Drummers avoid it instinctively, placing the
+ * snare a sixteenth either side instead.
+ *
+ * Only *on-beat* collisions are treated. Off-beat coincidences are usually
+ * deliberate, and four-on-the-floor styles depend on kick and clap landing
+ * together, so those tracks are left out of the default pairing.
+ *
+ * @param {object} p
+ * @param {object} [opts]
+ * @param {string[]} [opts.pair]    the two track names, victim second
+ * @param {number} [opts.strength]  0-1, how often a collision is broken up
+ * @param {number} [opts.seed]
+ */
+export function decollide(p, opts = {}) {
+  const { pair = ['kick', 'snare'], strength = 0.6, seed = 1 } = opts;
+  const [aName, bName] = pair;
+  if (!strength || !(aName in p.tracks) || !(bName in p.tracks)) return p;
+
+  const rand = rng(seed);
+  const a = p.tracks[aName];
+  const b = [...p.tracks[bName]];
+
+  for (let i = 0; i < b.length; i++) {
+    if (!a[i] || !b[i]) continue;                 // no collision here
+    if (i % p.stepsPerBeat !== 0) continue;       // off-beat: leave it alone
+    if (rand() >= strength) continue;
+
+    // Nudge to the nearest free step, preferring the one after — pushing the
+    // snare late reads as laid-back, pulling it early reads as a mistake.
+    const vel = b[i];
+    const target = [i + 1, i - 1, i + 2].find(
+      (j) => j >= 0 && j < b.length && !b[j] && !a[j],
+    );
+    b[i] = 0;
+    if (target !== undefined) b[target] = vel;
+  }
+
+  return { ...p, tracks: { ...p.tracks, [bName]: b } };
+}
+
+/**
  * Builds a fill from a pattern, typically for the last bar of a phrase.
  *
  * Thins the kick, densifies the snare and pushes velocities up, which reads as

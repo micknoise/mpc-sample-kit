@@ -6,7 +6,7 @@
 
 import { render } from './schedule.mjs';
 import { patternMs } from './pattern.mjs';
-import { vary, fill } from './transform.mjs';
+import { vary, fill, decollide } from './transform.mjs';
 
 /**
  * Renders sections consecutively.
@@ -54,23 +54,45 @@ export function arrangementMs(sections) {
  * @returns {Array<{pattern:object, repeats:number}>}
  */
 export function evolve(base, opts = {}) {
-  const { bars = 8, drift = 0.25, fillEvery = 4, lock = ['kick'], seed = 1 } = opts;
-  const sections = [];
+  const {
+    bars = 8, drift = 0.25, fillEvery = 4, lock = ['kick'], seed = 1,
+    decollideStrength = 0.6, decollidePair = ['kick', 'snare'],
+  } = opts;
 
-  for (let bar = 0; bar < bars; bar++) {
-    const isFill = fillEvery > 0 && (bar + 1) % fillEvery === 0;
-    if (isFill) {
-      sections.push({ pattern: fill(base, { intensity: 0.5 + drift, seed: seed + bar }), repeats: 1 });
-      continue;
-    }
+  return Array.from({ length: bars }, (_, bar) => ({
+    pattern: barPattern(base, bar, { drift, fillEvery, lock, seed, decollideStrength, decollidePair }),
+    repeats: 1,
+  }));
+}
+
+/**
+ * Builds the pattern for a single bar index.
+ *
+ * Factored out of evolve so that continuous players can generate bar N on
+ * demand without materialising a finite arrangement first — which is what lets
+ * playback run indefinitely rather than for a fixed number of bars.
+ */
+export function barPattern(base, bar, opts = {}) {
+  const {
+    drift = 0.25, fillEvery = 4, lock = ['kick'], seed = 1, forceFill = false,
+    decollideStrength = 0.6, decollidePair = ['kick', 'snare'],
+  } = opts;
+
+  const isFill = forceFill || (fillEvery > 0 && (bar + 1) % fillEvery === 0);
+
+  let p;
+  if (isFill) {
+    p = fill(base, { intensity: 0.5 + drift, seed: seed + bar });
+  } else if (bar === 0) {
     // Bar 0 plays the pattern as written, so the listener hears the idea first.
-    const amount = bar === 0 ? 0 : drift * (0.4 + (bar / bars) * 0.6);
-    sections.push({
-      pattern: amount ? vary(base, { amount, seed: seed + bar, lock }) : base,
-      repeats: 1,
-    });
+    p = base;
+  } else {
+    p = vary(base, { amount: drift * (0.4 + Math.min(bar / 8, 1) * 0.6), seed: seed + bar, lock });
   }
-  return sections;
+
+  // Applied per bar rather than once up front: variation and fills can both
+  // create fresh kick/snare collisions that were not in the original.
+  return decollide(p, { pair: decollidePair, strength: decollideStrength, seed: seed + bar });
 }
 
 /**

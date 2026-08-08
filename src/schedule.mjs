@@ -5,7 +5,7 @@
 // in the browser. Keeping the musical logic here means neither backend has any
 // opinion about rhythm.
 
-import { resolveNote, DEFAULT_KIT } from './pads.mjs';
+import { resolveNote, resolveVoices, DEFAULT_KIT, DEFAULT_VOICES } from './pads.mjs';
 import { stepMs, patternMs } from './pattern.mjs';
 import { rng } from './random.mjs';
 import { metricWeight, effectiveWeight, applyWeight } from './dynamics.mjs';
@@ -29,6 +29,8 @@ export function render(p, opts = {}) {
   const {
     repeats = 1,
     kit = DEFAULT_KIT,
+    voices = DEFAULT_VOICES,
+    voiceSpread = 0.35,
     channel = 1,
     gateMs = 40,
     seed = 1,
@@ -49,11 +51,29 @@ export function render(p, opts = {}) {
   const notes = Object.fromEntries(
     Object.keys(p.tracks).map((name) => [name, resolveNote(name, kit)]),
   );
+  const voiceNotes = Object.fromEntries(
+    Object.keys(p.tracks).map((name) => [name, resolveVoices(name, kit, voices)]),
+  );
+
+  /**
+   * Chooses which voice sounds for a hit.
+   *
+   * Substitution is biased towards quieter hits: ghost notes are where a
+   * drummer reaches for the rim or the edge, while accents land on the drum
+   * itself. Making it velocity-dependent rather than uniform is most of what
+   * stops this sounding like a random sample-swapper.
+   */
+  const pickVoice = (name, velocity) => {
+    const options = voiceNotes[name];
+    if (options.length < 2 || !voiceSpread) return notes[name];
+    const quietness = 1 - Math.min(velocity, 127) / 127;
+    if (rand() >= voiceSpread * (0.35 + quietness)) return notes[name];
+    return options[1 + Math.floor(rand() * (options.length - 1))];
+  };
 
   const events = [];
   for (let rep = 0; rep < repeats; rep++) {
     for (const [name, steps] of Object.entries(p.tracks)) {
-      const note = notes[name];
       for (let i = 0; i < steps.length; i++) {
         const vel = steps[i];
         if (!vel) continue;
@@ -75,8 +95,9 @@ export function render(p, opts = {}) {
         v = clamp(Math.round(v), 1, 127);
 
         t = Math.max(0, t);
-        events.push({ ms: t, bytes: [noteOn, note, v] });
-        events.push({ ms: t + gateMs, bytes: [noteOff, note, 0] });
+        const sounded = pickVoice(name, v);
+        events.push({ ms: t, bytes: [noteOn, sounded, v] });
+        events.push({ ms: t + gateMs, bytes: [noteOff, sounded, 0] });
       }
     }
   }

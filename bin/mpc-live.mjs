@@ -12,6 +12,8 @@
 //   conf 0.6       proportion of hits following the metre
 //   lock kick,hat  hold tracks steady (or "lock none")
 //   fill           fill on the next bar
+//   voice 0.5      how often an alternate voice (rim, clap) is substituted
+//   decol 0.8      how often kick/snare collisions on the beat are broken up
 //   seed 42        reseed the variation stream
 //   ?              show current state
 //   quit           stop cleanly
@@ -29,7 +31,7 @@ import { readFileSync } from 'node:fs';
 import { pattern, patternMs } from '../src/pattern.mjs';
 import { render, toMpcmidi } from '../src/schedule.mjs';
 import { style, styleNames } from '../src/generate.mjs';
-import { vary, fill } from '../src/transform.mjs';
+import { barPattern } from '../src/arrange.mjs';
 import { DEFAULT_KIT } from '../src/pads.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -64,6 +66,8 @@ function parseArgs(argv) {
     else if (a === '--dynamics') o.dynamics = Number(argv[++i]);
     else if (a === '--conformity') o.conformity = Number(argv[++i]);
     else if (a === '--seed') o.seed = Number(argv[++i]);
+    else if (a === '--voice-spread') o.voiceSpread = Number(argv[++i]);
+    else if (a === '--decollide') o.decollide = Number(argv[++i]);
     else if (a === '--lookahead') o.lookahead = Number(argv[++i]);
     else if (a === '-h' || a === '--help') o.help = true;
     else if (a.startsWith('--')) throw new Error(`unknown option ${a}`);
@@ -97,6 +101,8 @@ const state = {
   fillEvery: o.fillEvery,
   lock: o.lock,
   seed: o.seed,
+  voiceSpread: o.voiceSpread ?? 0.35,
+  decollide: o.decollide ?? 0.6,
   forceFill: false,
   bar: 0,
 };
@@ -114,14 +120,17 @@ let stopping = false;
 function nextBar() {
   const { base, drift, fillEvery, lock, seed, bar } = state;
   const isFill = state.forceFill || (fillEvery > 0 && (bar + 1) % fillEvery === 0);
-  state.forceFill = false;
 
-  const p = isFill
-    ? fill(base, { intensity: 0.5 + drift, seed: seed + bar })
-    : bar === 0 ? base : vary(base, { amount: drift, seed: seed + bar, lock });
+  const p = barPattern(base, bar, {
+    drift, fillEvery, lock, seed,
+    forceFill: state.forceFill,
+    decollideStrength: state.decollide,
+  });
+  state.forceFill = false;
 
   const events = render(p, {
     kit: spec.kit,
+    voiceSpread: state.voiceSpread,
     channel: spec.channel ?? 1,
     gateMs: spec.gateMs ?? 40,
     seed: seed + bar,
@@ -155,7 +164,8 @@ function showState() {
   console.log(
     `\n  bpm ${state.base.bpm}  drift ${state.drift}  fill every ${state.fillEvery}  ` +
     `dyn ${state.base.dynamics.depth}/${state.base.dynamics.conformity}  ` +
-    `lock [${state.lock.join(',') || 'none'}]  seed ${state.seed}  bar ${state.bar}`,
+    `lock [${state.lock.join(',') || 'none'}]  voice ${state.voiceSpread}  ` +
+    `decol ${state.decollide}  seed ${state.seed}  bar ${state.bar}`,
   );
 }
 
@@ -178,11 +188,13 @@ rl.on('line', (line) => {
       case 'dyn': rebuild({ dynamics: { depth: n } }); break;
       case 'conf': rebuild({ dynamics: { conformity: n } }); break;
       case 'seed': state.seed = n; break;
+      case 'voice': state.voiceSpread = n; break;
+      case 'decol': state.decollide = n; break;
       case 'fill': state.forceFill = true; break;
       case 'lock': state.lock = arg === 'none' || !arg ? [] : arg.split(','); break;
       case '?': showState(); break;
       case 'quit': case 'q': shutdown(); return;
-      default: console.log(`unknown command "${cmd}" — try: drift, bpm, dyn, conf, lock, fill, seed, ?, quit`);
+      default: console.log(`unknown command "${cmd}" — try: drift, bpm, dyn, conf, lock, fill, voice, decol, seed, ?, quit`);
     }
     if (cmd && cmd !== '?' && cmd !== 'quit') showState();
   } catch (e) {

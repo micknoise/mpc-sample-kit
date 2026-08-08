@@ -134,6 +134,35 @@ export const STYLES = {
     bpm: 108, swing: 0.12, humanizeMs: 8, humanizeVel: 14,
     tracks: { kick: 'x..x..x.|x..x..x.', rim: '..x..x..|..x..x..', shaker: 'o.o.o.o.|o.o.o.o.' },
   }),
+  // Swung ride with the classic skip note, hi-hat closing on 2 and 4, kick
+  // feathered underneath rather than driving, and a snare that comps against
+  // the ride instead of marking the backbeat.
+  jazz: () => ({
+    bpm: 132, swing: 0.33, humanizeMs: 12, humanizeVel: 18,
+    dynamics: { depth: 0.5, conformity: 0.7 },
+    tracks: {
+      ride: 'x...o.o.x...o.o.',
+      hat: '....o.......o...',
+      kick: 's...s...s...s...',
+      snare: '..s...x....s..o.',
+    },
+  }),
+
+  // Far out: the pulse is deliberately unanchored, conformity is low enough
+  // that accents land almost anywhere, and the timing is loose. Push --drift
+  // up and this stops resembling a bar at all, which is the point.
+  'free-jazz': () => ({
+    bpm: 148, swing: 0.28, humanizeMs: 22, humanizeVel: 30,
+    dynamics: { depth: 0.7, conformity: 0.35, anchorDownbeat: false },
+    tracks: {
+      ride: 'x.oo.x.o.oxo.x.o',
+      snare: '.x..s.x..o.x.s.x',
+      tomLow: '..o....x...o..x.',
+      kick: 'x...s..x..s...x.',
+      crash: 'x.............o.',
+    },
+  }),
+
   garage: () => ({
     bpm: 134, swing: 0.32, humanizeMs: 4, humanizeVel: 10,
     tracks: { kick: 'x...........x...', snare: '....x.......x...', hat: 'o.oo.o.oo.o.o.o.' },
