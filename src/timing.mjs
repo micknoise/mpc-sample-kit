@@ -49,6 +49,9 @@ export function driftFrom(intended, actual) {
  * @param {number}   [opts.count]     how many notes
  * @param {number}   [opts.spacingMs] gap between them
  * @param {number}   [opts.note]      which note to use
+ * @param {number}   [opts.channel]   1-16; must be the channel the device is
+ *                                    actually listening on, or the burst is
+ *                                    measured against an echo that never comes
  * @param {number}   [opts.velocity]  kept low so the test is not deafening
  * @param {function} [opts.now]
  * @param {function} [opts.setTimer]
@@ -61,6 +64,7 @@ export function measureTiming(opts) {
     count = 16,
     spacingMs = 125,
     note = 36,
+    channel = 1,
     velocity = 1,
     noteOffs = true,
     leadMs = 300,
@@ -68,12 +72,17 @@ export function measureTiming(opts) {
     setTimer = setTimeout,
   } = opts;
 
+  const noteOn = 0x90 | (channel - 1);
+  const noteOff = 0x80 | (channel - 1);
+
   return new Promise((resolve) => {
     const intended = [];
     const actual = [];
     const start = now() + leadMs;
 
     const onMessage = (e) => {
+      // Any channel, deliberately: the burst is the only thing being sent, and
+      // a device that echoes onto a different one is still echoing.
       const [status, n] = e.data ?? [];
       if ((status & 0xf0) !== 0x90 || n !== note || e.data[2] === 0) return;
       actual.push(now());
@@ -85,8 +94,8 @@ export function measureTiming(opts) {
     for (let i = 0; i < count; i++) {
       const at = start + i * spacingMs;
       intended.push(at);
-      output.send([0x90, note, velocity], at);
-      if (noteOffs) output.send([0x80, note, 0], at + 30);
+      output.send([noteOn, note, velocity], at);
+      if (noteOffs) output.send([noteOff, note, 0], at + 30);
     }
 
     // Wait for the burst plus a margin for the echo to come back.

@@ -20,6 +20,33 @@ export function noteToPad(note) {
   return pad >= 1 && pad <= PAD_COUNT ? pad : null;
 }
 
+/**
+ * A kit entry expressed as a raw MIDI note rather than as a pad.
+ *
+ * Bank A covers notes 36-51, which is every pad the unit has and therefore
+ * everything a kit needed to say — until the target stopped being the MPC. A
+ * General MIDI device puts its crash at 49 but its tambourine at 54 and its
+ * cowbell at 56, so a role map that can only name pads cannot describe one.
+ *
+ * Wrapping rather than allowing bare numbers keeps `kick: 1` unambiguous: it
+ * has always meant pad 1, and silently reinterpreting it as note 1 would
+ * retune every existing kit file.
+ */
+export function midiNote(n) {
+  if (!Number.isInteger(n) || n < 0 || n > 127) {
+    throw new RangeError(`midi note must be an integer 0-127, got ${n}`);
+  }
+  return { midi: n };
+}
+
+const isNoteEntry = (v) => v !== null && typeof v === 'object' && !Array.isArray(v) && 'midi' in v;
+
+/** One kit entry — a pad number or a midiNote() — to a MIDI note. */
+function entryToNote(entry) {
+  if (isNoteEntry(entry)) return midiNote(entry.midi).midi;
+  return padToNote(entry);
+}
+
 // Provisional role -> pad layout. Factory kits differ, so treat this as a
 // starting point to be overridden per kit rather than as ground truth; it has
 // not yet been confirmed by ear against a specific kit on this unit.
@@ -58,18 +85,37 @@ export const DEFAULT_VOICES = {
 
 /**
  * Resolves a track name to a MIDI note. Accepts a role name from the kit map,
- * a bare pad number, or "padN". Kit entries may be an array, in which case the
- * first entry is the primary voice.
+ * a bare pad number, "padN", or "noteN" for a device addressed by note rather
+ * than by pad. Kit entries may be an array, in which case the first entry is
+ * the primary voice.
  */
 export function resolveNote(name, kit = DEFAULT_KIT) {
   if (typeof name === 'number') return padToNote(name);
   if (name in kit) {
     const v = kit[name];
-    return padToNote(Array.isArray(v) ? v[0] : v);
+    return entryToNote(Array.isArray(v) ? v[0] : v);
   }
-  const m = /^pad\s*(\d+)$/i.exec(name);
-  if (m) return padToNote(Number(m[1]));
+  const pad = /^pad\s*(\d+)$/i.exec(name);
+  if (pad) return padToNote(Number(pad[1]));
+  const note = /^note\s*(\d+)$/i.exec(name);
+  if (note) return midiNote(Number(note[1])).midi;
   throw new Error(`unknown track "${name}" — not in kit map and not a pad number`);
+}
+
+/**
+ * How a kit addresses a role: the note it resolves to, and the pad number if
+ * that is what it is.
+ *
+ * `pad` is null for a kit that names notes directly, which is not the same
+ * question as whether the note happens to fall inside bank A: General MIDI's
+ * snare is note 38, and calling that "pad 2" would be a display that lies. So
+ * the entry's own form decides, not the range it lands in.
+ */
+export function voiceInfo(name, kit = DEFAULT_KIT) {
+  const note = resolveNote(name, kit);
+  const entry = Array.isArray(kit[name]) ? kit[name][0] : kit[name];
+  const byNote = isNoteEntry(entry) || /^note\s*\d+$/i.test(String(name));
+  return { note, pad: byNote ? null : noteToPad(note) };
 }
 
 /**
@@ -82,7 +128,7 @@ export function resolveVoices(name, kit = DEFAULT_KIT, voices = DEFAULT_VOICES) 
   const primary = resolveNote(name, kit);
 
   if (name in kit && Array.isArray(kit[name])) {
-    return kit[name].map((pad) => padToNote(pad));
+    return kit[name].map(entryToNote);
   }
   const roles = voices[name];
   if (!roles) return [primary];

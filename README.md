@@ -31,6 +31,8 @@ nothing will sound.
 
 ```
 src/             pattern, dynamics, generation, transforms, arrangement, clock
+src/gm.mjs       General MIDI note map, for when the MPC is not the target
+src/synth.mjs    the same kit synthesised in the browser, for no hardware at all
 bin/mpc-seq.mjs  render a pattern or phrase and play it
 bin/mpc-live.mjs continuous generation, steerable while running
 bin/mpc-kit.mjs  audition pads and save a kit map
@@ -279,6 +281,43 @@ node bin/mpc-seq.mjs --style boom-bap --kit kits/mine.json
 
 Kit specs merge over the defaults, so naming two pads does not orphan the rest.
 
+### When there is no MPC
+
+Pads 1-16 are MIDI notes 36-51 *on this unit*. Sent to anything else, that map
+plays whatever happens to live at those notes — usually toms and cymbals where
+the kick and snare should be. So a kit entry can name a raw note instead of a
+pad, via `midiNote()`:
+
+```js
+import { midiNote } from './src/pads.mjs';
+const kit = { kick: midiNote(36), tamb: midiNote(54) };   // 54 is past bank A
+```
+
+[`src/gm.mjs`](src/gm.mjs) is that map filled in: `GM_KIT` covers every role the
+pad kit does, using the General MIDI percussion notes, plus a few alternates
+(pedal hat, ride bell, second crash) that sixteen pads cannot hold.
+
+**General MIDI percussion is channel 10.** The same notes on channel 1 play a
+piano, which is the usual explanation for a GM device that appears to be
+ignoring us — hence `GM_CHANNEL`, and the channel field in the browser app.
+
+## Built-in synth
+
+[`src/synth.mjs`](src/synth.mjs) synthesises the GM kit in the browser, so the
+page makes a sound with no hardware attached at all. It looks like a Web MIDI
+output — `send(bytes, at)`, `clear()`, `id`, `name` — so the transport,
+scheduler and grid cannot tell it from a port.
+
+All 47 GM percussion notes have a voice, synthesised rather than sampled: no
+assets, no network, and the page stays static. Note-offs are ignored, as the
+MPC's one-shot pads ignore them.
+
+It is also the most punctual output here. Voices are scheduled directly on the
+audio clock, which is sample-accurate — no port, no bridge, no timer between
+the schedule and the sound. `getOutputTimestamp()` lines the audio clock up
+against `performance.now()`, so a note is *audible* when it was asked for
+rather than merely queued then.
+
 ## Clock and transport
 
 `--sync` sends MIDI clock at 24 PPQN wrapped in transport start/stop. Because
@@ -314,8 +353,27 @@ modules will not load over `file://`:
 python3 -m http.server 8765
 ```
 
-then open `http://localhost:8765/web/`. Chromium only; Safari and Firefox do
-not implement Web MIDI.
+then open `http://localhost:8765/web/`. Chromium for MIDI; Safari and Firefox do
+not implement Web MIDI, but the built-in synth still plays there.
+
+**It degrades to something audible rather than to nothing.** Three cases, and
+the page picks between them without being asked:
+
+| What is attached | Output | Kit | Channel |
+|---|---|---|---|
+| An MPC | the MPC | pads 1-16 | 1 |
+| Some other MIDI device | that device | General MIDI | 10 |
+| Nothing, or no Web MIDI | built-in synth | General MIDI | 10 |
+
+The **Kit** selector overrides the guess, and stops following the output once
+touched — re-plugging a cable should not overrule a choice already made. Custom
+maps take `kick=1` for a pad and `kick=#36` for a raw note. The built-in synth
+appears in the output list at all times, so it can be chosen over a device that
+is attached.
+
+**Record to MPC** is disabled on the built-in synth, there being nothing to
+record into, and **Measure timing** declines to run: the synth *is* the audio
+clock, so the answer would be zero by construction rather than by measurement.
 
 **Play runs until you press Stop.** Playback is a rolling look-ahead
 ([`src/transport.mjs`](src/transport.mjs)) that queues a few hundred

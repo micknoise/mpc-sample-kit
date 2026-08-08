@@ -84,7 +84,9 @@
 <div class="wrap">
   <h1>MPC Sample — pattern control</h1>
   <p class="sub">Web MIDI. Not Safari or Firefox, which do not implement it. On iPhone use
-    MIDIWeb Browser — measured under 5ms jitter, against 30ms in Web MIDI Browser.</p>
+    MIDIWeb Browser — measured under 5ms jitter, against 30ms in Web MIDI Browser.
+    With no MPC attached it falls back to a General MIDI note map, and with no MIDI at
+    all to a drum kit synthesised in the page.</p>
 
   <div class="panel">
     <div class="row">
@@ -177,14 +179,20 @@
       <div class="field">
         <label for="kitPreset">Kit</label>
         <select id="kitPreset">
-          <option value="full">full — all 16 pads</option>
+          <option value="full">full — all 16 MPC pads</option>
+          <option value="gm">general midi — notes 35-81</option>
           <option value="minimal">minimal — everything on pads 1, 2, 5</option>
           <option value="custom">custom…</option>
         </select>
       </div>
       <div class="field">
         <label for="kitSpec">Custom pads</label>
-        <input type="text" id="kitSpec" value="kick=1,snare=2,hat=5" size="22" disabled>
+        <input type="text" id="kitSpec" value="kick=1,snare=2,hat=5" size="22"
+               title="name=pad for MPC pads 1-16, name=#note for a raw MIDI note" disabled>
+      </div>
+      <div class="field">
+        <label for="channel">MIDI channel</label>
+        <input type="number" id="channel" min="1" max="16" step="1" value="1" style="width:70px">
       </div>
       <div class="field">
         <label for="lock">Lock (hold steady)</label>
@@ -237,12 +245,20 @@ import {
   listPorts, findPort, wrapOutput, openAccess, describePorts, getOutputs,
   getInputs,
 } from '../src/webmidi.mjs';
-import { resolveNote, resolveVoices, noteToPad, DEFAULT_KIT } from '../src/pads.mjs';
+import {
+  resolveNote, resolveVoices, voiceInfo, midiNote, DEFAULT_KIT, DEFAULT_VOICES,
+} from '../src/pads.mjs';
+import { GM_KIT, GM_VOICES, GM_CHANNEL, gmName } from '../src/gm.mjs';
+import { createSynthOutput } from '../src/synth.mjs';
 
 const $ = (id) => document.getElementById(id);
 const statusEl = $('status');
 let access = null, output = null, playing = false, sysexOK = false, recording = false, legacyMidi = false;
-let audioContext = null, ticker = null;
+let audioContext = null, ticker = null, synth = null;
+
+// The built-in synth appears in the port list as though it were a port, since
+// as far as everything downstream is concerned it is one.
+const SYNTH_ID = '__synth__';
 
 function setStatus(msg, kind = '') { statusEl.textContent = msg; statusEl.className = kind; }
 
@@ -250,9 +266,10 @@ function setStatus(msg, kind = '') { statusEl.textContent = msg; statusEl.classN
 
 async function initMidi() {
   if (!navigator.requestMIDIAccess) {
-    setStatus('Web MIDI unavailable — use Chrome, Edge or Opera', 'bad');
-    $('port').innerHTML = '<option>unsupported</option>';
-    $('play').disabled = true;
+    // Not fatal any more: the built-in synth needs no MIDI at all, so the page
+    // still plays. Firefox and Safari land here.
+    refreshPorts();
+    setStatus('no Web MIDI in this browser — playing the built-in synth', '');
     return;
   }
   try {
@@ -272,8 +289,8 @@ async function initMidi() {
       refreshPorts();
     }
   } catch (e) {
-    setStatus(`MIDI access denied: ${e.message}`, 'bad');
-    $('play').disabled = true;
+    refreshPorts();
+    setStatus(`MIDI access denied: ${e.message} — playing the built-in synth`, 'bad');
   }
 }
 
@@ -294,7 +311,51 @@ function useSoftwareTiming() {
 }
 
 function openPort(id) {
+  // The synth schedules on the audio clock itself, so it must not be wrapped:
+  // wrapOutput exists to fake timestamps for outputs that ignore them, and
+  // draining a queue from a timer would be strictly worse than what the synth
+  // already does. Null until the AudioContext is up — see ensureOutput.
+  if (id === SYNTH_ID) return synth;
   return wrapOutput(findPort(getOutputs(access), id), { legacy: useSoftwareTiming(), ticker });
+}
+
+/**
+ * Brings up whatever the selected output needs before it can make a sound.
+ *
+ * Only the synth needs anything: an AudioContext, which iOS will only start
+ * inside a user gesture. Hence async, and hence called from the click handlers
+ * rather than at load.
+ */
+async function ensureOutput() {
+  if ($('port').value !== SYNTH_ID) return output;
+  if (!synth) {
+    await ensureTicker();
+    if (!audioContext) {
+      setStatus('no Web Audio either — nothing to play through', 'bad');
+      return null;
+    }
+    synth = createSynthOutput(audioContext);
+  }
+  output = synth;
+  return output;
+}
+
+const isSynth = () => output != null && output === synth;
+
+/** What the output is and how it is being timed, for the status line. */
+function outputLabel() {
+  if (!output) {
+    return $('port').value === SYNTH_ID ? 'built-in synth — press Play to start audio' : 'idle';
+  }
+  const timing = isSynth() ? output.kind
+    : useSoftwareTiming() ? (ticker?.kind ?? 'timer')
+    : 'midi timing';
+  return `connected: ${output.name} · ${timing}`;
+}
+
+function reportOutput() {
+  if (playing || recording) return;
+  setStatus(outputLabel(), (output || $('port').value === SYNTH_ID) ? 'ok' : '');
 }
 
 /**
@@ -312,40 +373,87 @@ async function ensureTicker() {
   if (ticker) return ticker;
   audioContext = await openAudioContext();
   ticker = await createTicker(audioContext);
-  // Re-open the port so the output picks the ticker up.
-  if (access && $('port').value) output = openPort($('port').value);
+  // Re-open the port so the output picks the ticker up. The synth is left
+  // alone: it is not wrapped, and ensureOutput owns it.
+  if (access && $('port').value && $('port').value !== SYNTH_ID) output = openPort($('port').value);
   return ticker;
 }
 
+// The port ids last applied, so an unchanged re-enumeration is a no-op.
+let lastPortIds = null;
+
 function refreshPorts() {
   const sel = $('port');
-  const outs = listPorts(getOutputs(access));
+  const outs = access ? listPorts(getOutputs(access)) : [];
+  const chosen = sel.value;
+
   sel.innerHTML = '';
-  if (!outs.length) {
-    sel.innerHTML = '<option>no outputs found</option>';
-    setStatus(
-      `no MIDI outputs — is the MPC on USB MIDI, not disk mode? [${describePorts(getOutputs(access))}]`,
-      'bad',
-    );
-    $('play').disabled = true;
-    return;
-  }
   for (const out of outs) {
     const opt = document.createElement('option');
     opt.value = String(out.id); opt.textContent = out.name ?? String(out.id);
     sel.appendChild(opt);
   }
+  const synthOpt = document.createElement('option');
+  synthOpt.value = SYNTH_ID;
+  synthOpt.textContent = 'Built-in synth \u2014 General MIDI';
+  sel.appendChild(synthOpt);
+
+  // Ports are re-enumerated whenever anything is plugged or unplugged, so a
+  // choice already made has to survive it \u2014 otherwise selecting the synth on a
+  // machine with a chatty USB hub would keep getting undone.
   const mpc = outs.find((o) => /mpc/i.test(o.name ?? ''));
-  sel.value = (mpc ?? outs[0]).id;
-  output = openPort(sel.value);
+  sel.value = [...sel.options].some((o) => o.value === chosen)
+    ? chosen
+    : String((mpc ?? outs[0])?.id ?? SYNTH_ID);
+
   $('play').disabled = false;
-  setStatus(`connected: ${output.name}${useSoftwareTiming() ? ` \u00b7 ${ticker?.kind ?? 'timer'}` : ' \u00b7 midi timing'}`, 'ok');
+
+  // Enumeration keeps retrying for a few seconds after load, looking for a port
+  // that arrives late, and statechange fires for unrelated devices. Re-applying
+  // an unchanged list would talk over the status line \u2014 including over a
+  // transport already running, now that an empty list is a playable state
+  // rather than a dead end.
+  const ids = outs.map((o) => String(o.id)).join('|');
+  if (ids === lastPortIds) return;
+  lastPortIds = ids;
+
+  selectOutput();
+
+  if (!outs.length && access && !playing && !recording) {
+    setStatus(
+      `no MIDI outputs \u2014 is the MPC on USB MIDI, not disk mode? Playing the built-in synth. [${describePorts(getOutputs(access))}]`,
+      '',
+    );
+  }
 }
 
-$('port').addEventListener('change', (e) => {
-  output = openPort(e.target.value);
-  setStatus(`connected: ${output.name}${useSoftwareTiming() ? ` \u00b7 ${ticker?.kind ?? 'timer'}` : ' \u00b7 midi timing'}`, 'ok');
-});
+/**
+ * Applies the selected output, and with it the kit.
+ *
+ * The pad map is a property of the MPC rather than of drumming: notes 36-51 are
+ * its bank A and mean nothing to anything else, so a pattern sent to a GM
+ * device on that map plays whatever happens to sit there \u2014 usually toms and
+ * cymbals where the kick and snare should be. Hence the fallback: no MPC, no
+ * pad map. It stops as soon as the kit is set by hand, since after that the
+ * choice is the user's and re-plugging a cable should not overrule it.
+ */
+function selectOutput() {
+  output = openPort($('port').value);
+  $('record').disabled = $('port').value === SYNTH_ID;   // nothing to record into
+
+  if (!kitTouched) {
+    const isMpc = $('port').value !== SYNTH_ID && /mpc/i.test(output?.name ?? '');
+    const preset = isMpc ? 'full' : 'gm';
+    if ($('kitPreset').value !== preset) {
+      $('kitPreset').value = preset;
+      syncKitFields();
+      refresh();
+    }
+  }
+  reportOutput();
+}
+
+$('port').addEventListener('change', selectOutput);
 
 // ------------------------------------------------------------- build pattern
 
@@ -380,27 +488,74 @@ const MINIMAL_KIT = {
  */
 function currentKit() {
   const preset = $('kitPreset').value;
+  if (preset === 'gm') return GM_KIT;
   if (preset === 'minimal') return MINIMAL_KIT;
   if (preset === 'full') return DEFAULT_KIT;
 
   const kit = {};
   for (const part of $('kitSpec').value.split(/[,\s]+/).filter(Boolean)) {
-    const m = /^([A-Za-z]\w*)=(\d+)$/.exec(part);
-    if (!m) throw new Error(`bad pad mapping "${part}" — expected name=pad`);
-    kit[m[1]] = +m[2];
+    // "kick=1" is pad 1, as it always was. "kick=#36" is note 36 — the only way
+    // to describe a device whose sounds are not laid out as sixteen pads.
+    const m = /^([A-Za-z]\w*)=(#?)(\d+)$/.exec(part);
+    if (!m) throw new Error(`bad pad mapping "${part}" — expected name=pad or name=#note`);
+    kit[m[1]] = m[2] ? midiNote(+m[3]) : +m[3];
   }
   if (!Object.keys(kit).length) throw new Error('custom kit is empty');
   return kit;
 }
 
-/** Plays one pad so the contents of the map can be checked by ear. */
-function audition(name) {
+/**
+ * Voice substitution for the kit in force.
+ *
+ * A GM kit has sounds the pads do not — a pedal hat, a ride bell, a second
+ * crash — so the alternates a hit can be played on differ with the map.
+ */
+function currentVoices() {
+  return $('kitPreset').value === 'gm' ? GM_VOICES : DEFAULT_VOICES;
+}
+
+/**
+ * The channel notes go out on.
+ *
+ * GM puts percussion on channel 10 and means it: the same notes on channel 1
+ * play a piano, which is the usual explanation for a GM device that appears to
+ * be ignoring the page. The MPC listens on channel 1. Set from the preset, but
+ * left editable — a custom map on a GM module needs 10 too.
+ */
+function currentChannel() {
+  const n = Math.round(+$('channel').value);
+  return Number.isFinite(n) ? Math.min(16, Math.max(1, n)) : 1;
+}
+
+const PRESET_CHANNEL = { full: 1, minimal: 1, gm: GM_CHANNEL };
+
+function syncKitFields() {
+  const preset = $('kitPreset').value;
+  $('kitSpec').disabled = preset !== 'custom';
+  if (preset in PRESET_CHANNEL) $('channel').value = String(PRESET_CHANNEL[preset]);
+}
+
+// Whether the kit has been chosen by hand. Until it has, it follows the output.
+let kitTouched = false;
+
+/** Plays one voice so the contents of the map can be checked by ear. */
+async function audition(name) {
+  let info;
+  try { info = voiceInfo(name, currentKit()); } catch { return; }
+  await ensureOutput();
   if (!output) return;
-  let note;
-  try { note = resolveNote(name, currentKit()); } catch { return; }
-  output.send([0x90, note, 112]);
-  output.send([0x80, note, 0], performance.now() + 140);
-  setStatus(`pad ${noteToPad(note)} (${name})`, 'ok');
+
+  const ch = currentChannel() - 1;
+  output.send([0x90 | ch, info.note, 112]);
+  output.send([0x80 | ch, info.note, 0], performance.now() + 140);
+  setStatus(describeVoice(name, info), 'ok');
+}
+
+/** "kick pad 1" for the MPC, "kick note 36 — bass drum 1" for a GM map. */
+function describeVoice(name, info) {
+  if (info.pad) return `${name} · pad ${info.pad}`;
+  const gm = gmName(info.note);
+  return `${name} · note ${info.note}${gm ? ` — ${gm}` : ''}`;
 }
 
 // Hand edits to the seed pattern, keyed by track name. Cleared whenever the
@@ -498,9 +653,9 @@ function buildBar(p, slot) {
  * it leaves the RNG stream — and therefore every velocity — untouched. Timing
  * humanisation stays in for exactly that reason.
  */
-function shapedTracks(p, seed, kit) {
+function shapedTracks(p, seed, kit, voices) {
   const flat = { ...p, swing: 0 };
-  const events = render(flat, { seed, repeats: 1, voiceSpread: +$('voice').value, kit });
+  const events = render(flat, { seed, repeats: 1, voiceSpread: +$('voice').value, kit, voices });
   const step = patternMs(p) / p.length;
 
   // Map every note a track might sound on, not just its primary — otherwise
@@ -510,7 +665,7 @@ function shapedTracks(p, seed, kit) {
   const byNote = {};
   for (const name of Object.keys(p.tracks)) byNote[resolveNote(name, kit)] = name;
   for (const name of Object.keys(p.tracks)) {
-    for (const note of resolveVoices(name, kit)) {
+    for (const note of resolveVoices(name, kit, voices)) {
       if (!(note in byNote)) byNote[note] = name;
     }
   }
@@ -560,18 +715,20 @@ function drawGrid(p, editable) {
 
   const cols = `repeat(${p.length}, minmax(14px, 1fr))`;
   const kit = currentKit();
-  const shaped = shapedTracks(p, +$('seed').value, kit);
+  const shaped = shapedTracks(p, +$('seed').value, kit, currentVoices());
 
   for (const [name, steps] of Object.entries(shaped)) {
     const row = document.createElement('div');
     row.className = 'track';
     const label = document.createElement('div');
     label.className = 'track-name';
-    let pad = null;
-    try { pad = noteToPad(resolveNote(name, kit)); } catch { /* not in this kit */ }
-    label.textContent = pad ? `${name} ${pad}` : name;
-    label.title = pad ? `pad ${pad} — click to audition` : `${name} is not in this kit`;
-    if (pad) {
+    let info = null;
+    try { info = voiceInfo(name, kit); } catch { /* not in this kit */ }
+    label.textContent = info ? `${name} ${info.pad ?? info.note}` : name;
+    label.title = info
+      ? `${describeVoice(name, info)} — click to audition`
+      : `${name} is not in this kit`;
+    if (info) {
       label.classList.add('audition');
       label.addEventListener('click', () => audition(name));
     }
@@ -619,12 +776,15 @@ function buildTransport() {
     output,
     lookaheadMs: Math.max(100, +$('lookahead').value || 400),
     sendTransport: $('sync').checked,
+    channel: currentChannel(),
     nextBar: (index) => {
       const p = currentBar(currentPattern(), index);
       const events = render(p, {
         voiceSpread: +$('voice').value,
         seed: +$('seed').value + index,
         kit: currentKit(),
+        voices: currentVoices(),
+        channel: currentChannel(),
         noteOffs: $('noteOffs').checked,
       });
       if ($('sync').checked) {
@@ -637,8 +797,12 @@ function buildTransport() {
   });
 }
 
-function play() {
-  if (!output || playing) return;
+async function play() {
+  if (playing) return;
+  // The synth's AudioContext can only be started from a gesture, and this is
+  // one. A MIDI port is already open and this resolves immediately.
+  await ensureOutput();
+  if (!output) return;
   transport = buildTransport();
   if (!transport.play()) return;
   playing = true;
@@ -670,6 +834,7 @@ async function record() {
   transport = createTransport({
     output,
     sendTransport: false,          // arming already sent START
+    channel: currentChannel(),
     maxBars: bars,
     nextBar: (index) => {
       const p = currentBar(currentPattern(), index);
@@ -677,6 +842,8 @@ async function record() {
         voiceSpread: +$('voice').value,
         seed: +$('seed').value + index,
         kit: currentKit(),
+        voices: currentVoices(),
+        channel: currentChannel(),
         noteOffs: $('noteOffs').checked,
       });
       events.push(...clockEvents(p.bpm, patternMs(p), { transport: false }));
@@ -704,17 +871,31 @@ async function record() {
  * of only the part visible from here.
  */
 async function measure() {
-  if (!output || playing || recording) return;
-  await ensureTicker();
-  const inputs = listPorts(getInputs(access));
+  if (playing || recording) return;
+  await ensureOutput();
+  if (!output) return;
+  const inputs = access ? listPorts(getInputs(access)) : [];
   const input = inputs.find((p) => /mpc/i.test(p.name ?? '')) ?? inputs[0] ?? null;
+
+  // The synth has no echo path to measure — it *is* the audio clock, so the
+  // answer would be "zero" by construction rather than by measurement.
+  if (isSynth()) {
+    setStatus('nothing to measure: the built-in synth schedules on the audio clock itself', '');
+    return;
+  }
 
   $('measure').disabled = true;
   setStatus('measuring — 16 quiet notes, please wait…', 'ok');
 
-  measureTiming({ output, input, count: 16, spacingMs: 125, noteOffs: $('noteOffs').checked }).then((result) => {
+  measureTiming({
+    output, input, count: 16, spacingMs: 125,
+    channel: currentChannel(),
+    noteOffs: $('noteOffs').checked,
+  }).then((result) => {
     $('measure').disabled = false;
-    const mode = useSoftwareTiming() ? `software (${ticker?.kind ?? 'timer'})` : 'midi timestamps';
+    const mode = isSynth() ? output.kind
+      : useSoftwareTiming() ? `software (${ticker?.kind ?? 'timer'})`
+      : 'midi timestamps';
     setStatus(`${mode}: ${describeTiming(result)}`, result.stats.worst < 15 ? 'ok' : 'bad');
     console.log('timing result', result);
   });
@@ -731,7 +912,7 @@ function stop() {
   }
   $('play').disabled = false;
   $('stop').disabled = true;
-  setStatus(output ? `connected: ${output.name}` : 'idle', 'ok');
+  reportOutput();
 }
 
 // -------------------------------------------------------------------- wiring
@@ -779,7 +960,7 @@ function refresh() {
     $('gridHint').textContent = showBar === 0
       ? 'Click a step to cycle rest \u2192 normal \u2192 accent \u2192 ghost.'
       : `Bar ${showBar} is generated from the seed \u2014 view only.`;
-    if (!playing) setStatus(output ? `connected: ${output.name}` : 'idle', output ? 'ok' : '');
+    reportOutput();
   }
   catch (e) { setStatus(e.message, 'bad'); }
 }
@@ -790,17 +971,16 @@ for (const id of ['bpm', 'swing', 'dyn', 'conf', 'phrase', 'drift', 'voice', 'de
 }
 $('timing').addEventListener('change', () => {
   if (playing || recording) return;          // do not swap the clock mid-phrase
-  if (access && $('port').value) output = openPort($('port').value);
-  setStatus(
-    output ? `connected: ${output.name}${useSoftwareTiming() ? ` \u00b7 ${ticker?.kind ?? 'timer'}` : ' \u00b7 midi timing'}` : 'idle',
-    'ok',
-  );
+  if ($('port').value !== SYNTH_ID) output = openPort($('port').value);
+  reportOutput();
 });
 $('kitPreset').addEventListener('change', () => {
-  $('kitSpec').disabled = $('kitPreset').value !== 'custom';
+  kitTouched = true;                         // stop following the output
+  syncKitFields();
   refresh();
 });
 $('kitSpec').addEventListener('input', refresh);
+$('channel').addEventListener('input', refresh);
 $('euclid').addEventListener('change', clearEdits);
 $('resetGrid').addEventListener('click', () => { clearEdits(); refresh(); });
 $('measure').addEventListener('click', measure);

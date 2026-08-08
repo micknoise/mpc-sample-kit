@@ -29,6 +29,9 @@ const TRANSPORT_START = [0xfa];
  * @param {number}   [opts.leadMs]        delay before the first note
  * @param {number}   [opts.maxBarsPerTick] guard against runaway loops
  * @param {boolean}  [opts.sendTransport] emit MIDI start/stop
+ * @param {number}   [opts.channel]      channel the panic on stop is sent on;
+ *                                       must match the one the notes went out
+ *                                       on or the hanging note stays hanging
  * @param {number}   [opts.maxBars]      stop after this many bars (0 = forever)
  * @param {function} [opts.onEnd]        called once a bounded run finishes
  * @param {function} [opts.now]           clock, defaults to performance.now
@@ -46,6 +49,7 @@ export function createTransport(opts) {
     leadMs = 150,
     maxBarsPerTick = 8,
     sendTransport = false,
+    channel = 1,
     maxBars = 0,
     onEnd = () => {},
     now = () => performance.now(),
@@ -121,7 +125,7 @@ export function createTransport(opts) {
     // clear() drops whatever is still queued; the panic catches any note left
     // hanging because its note-off was in the part we just dropped.
     output.clear?.();
-    output.send(PANIC());
+    output.send(PANIC(channel));
     if (sendTransport) output.send(TRANSPORT_STOP);
     return true;
   }
