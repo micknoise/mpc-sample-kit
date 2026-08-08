@@ -687,6 +687,41 @@ test('the shared feel still moves the beat around', () => {
   assert.ok(on.some((t, i) => Math.abs(t - grid[i]) > 2), 'humanisation should not be a no-op');
 });
 
+test('styles declare the track that carries their identity', () => {
+  // Freeing every track so the kick could move also freed the jazz ride, and a
+  // mutated ride ostinato is no longer a jazz groove.
+  assert.deepEqual(style('jazz').lock, ['ride']);
+  assert.deepEqual(style('techno').lock, ['kick'], 'four-on-the-floor is the identity');
+  for (const name of styleNames()) {
+    assert.ok(Array.isArray(style(name).lock), `${name} must declare a lock, even if empty`);
+    for (const track of style(name).lock) {
+      assert.ok(track in style(name).tracks, `${name} locks "${track}" which it does not have`);
+    }
+  }
+});
+
+test('a locked identity track survives heavy drift while others move', () => {
+  const spec = style('jazz');
+  const base = pattern(spec);
+  const kicks = new Set();
+  for (let bar = 0; bar < 8; bar++) {
+    const p = barPattern(base, bar, { drift: 0.8, fillEvery: 0, seed: 2, lock: spec.lock });
+    assert.deepEqual(p.tracks.ride, base.tracks.ride, `bar ${bar}: the ride drifted`);
+    kicks.add(p.tracks.kick.join(','));
+  }
+  assert.ok(kicks.size >= 4, 'the kick should still develop');
+});
+
+test('a style can restrict the fill vocabulary', () => {
+  const spec = style('jazz');
+  assert.deepEqual(spec.fillShapes, ['sparse', 'triplet']);
+  const base = pattern(spec);
+  for (let seed = 1; seed <= 20; seed++) {
+    const f = fill(base, { seed, shapes: spec.fillShapes });
+    assert.ok(spec.fillShapes.includes(f.fillShape), `got ${f.fillShape}`);
+  }
+});
+
 test('randomTrack respects density bounds', () => {
   assert.equal(randomTrack(16, 0, { rand: rng(1) }).filter(Boolean).length, 0);
   assert.equal(randomTrack(16, 1, { rand: rng(1) }).filter(Boolean).length, 16);

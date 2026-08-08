@@ -284,6 +284,7 @@ function currentBar(p, n) {
     seed: +$('seed').value,
     decollideStrength: +$('decollide').value,
     fillShape: $('fillShape').value,
+    fillShapes: style($('style').value).fillShapes,
   });
 }
 
@@ -464,6 +465,7 @@ function syncFromStyle() {
   $('bpm').value = s.bpm;
   $('swing').value = s.swing ?? 0;
   $('swingUnit').value = String(s.swingUnit ?? 1);
+  $('lock').value = (s.lock ?? []).join(',');
   refresh();
 }
 

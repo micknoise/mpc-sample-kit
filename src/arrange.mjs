@@ -61,12 +61,13 @@ export function evolve(base, opts = {}) {
   const {
     bars = 8, drift = 0.25, fillEvery = 4, lock = [], seed = 1,
     decollideStrength = 0.6, decollidePair = ['kick', 'snare'],
-    fillShape = 'auto', kit = DEFAULT_KIT, dodgeFour = 0.85,
+    fillShape = 'auto', fillShapes, kit = DEFAULT_KIT, dodgeFour = 0.85,
   } = opts;
 
   return Array.from({ length: bars }, (_, bar) => ({
     pattern: barPattern(base, bar, {
-      drift, fillEvery, lock, seed, decollideStrength, decollidePair, fillShape, kit, dodgeFour,
+      drift, fillEvery, lock, seed, decollideStrength, decollidePair,
+      fillShape, fillShapes, kit, dodgeFour,
     }),
     repeats: 1,
   }));
@@ -83,7 +84,7 @@ export function barPattern(base, bar, opts = {}) {
   const {
     drift = 0.25, fillEvery = 4, lock = [], seed = 1, forceFill = false,
     decollideStrength = 0.6, decollidePair = ['kick', 'snare'],
-    fillShape = 'auto', kit = DEFAULT_KIT, dodgeFour = 0.85,
+    fillShape = 'auto', fillShapes, kit = DEFAULT_KIT, dodgeFour = 0.85,
   } = opts;
 
   const isFill = forceFill || (fillEvery > 0 && (bar + 1) % fillEvery === 0);
@@ -95,7 +96,7 @@ export function barPattern(base, bar, opts = {}) {
     // that survived even six different shapes.
     const spread = rng(seed * 7919 + bar)();
     const intensity = Math.min(1, Math.max(0.25, 0.4 + drift * 0.6 + (spread - 0.5) * 0.55));
-    p = fill(base, { intensity, seed: seed + bar, shape: fillShape, kit });
+    p = fill(base, { intensity, seed: seed + bar, shape: fillShape, shapes: fillShapes, kit });
   } else if (bar === 0) {
     // Bar 0 plays the pattern as written, so the listener hears the idea first.
     p = base;

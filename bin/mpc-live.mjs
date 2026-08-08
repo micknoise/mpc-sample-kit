@@ -101,7 +101,7 @@ const state = {
   base: pattern(spec),
   drift: o.drift,
   fillEvery: o.fillEvery,
-  lock: o.lock,
+  lock: o.lock.length ? o.lock : (spec.lock ?? []),
   seed: o.seed,
   voiceSpread: o.voiceSpread ?? 0.35,
   decollide: o.decollide ?? 0.6,
@@ -129,6 +129,7 @@ function nextBar() {
     forceFill: state.forceFill,
     decollideStrength: state.decollide,
     fillShape: state.fillShape,
+    fillShapes: spec.fillShapes,
     kit: spec.kit,
   });
   state.forceFill = false;

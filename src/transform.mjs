@@ -244,12 +244,14 @@ const available = (kit, roles) => roles.filter((r) => r in kit);
  * @param {object} [opts.kit]        used to discover which voices exist
  */
 export function fill(p, opts = {}) {
-  const { intensity = 0.6, seed = 7, shape = 'auto', kit = DEFAULT_KIT, maxRun = 3 } = opts;
+  const {
+    intensity = 0.6, seed = 7, shape = 'auto', kit = DEFAULT_KIT, maxRun = 3,
+    shapes = FILL_SHAPES,
+  } = opts;
 
   const rand = rng(seed);
-  const chosen = shape === 'auto'
-    ? FILL_SHAPES[Math.floor(rand() * FILL_SHAPES.length)]
-    : shape;
+  const pool = shapes.length ? shapes : FILL_SHAPES;
+  const chosen = shape === 'auto' ? pool[Math.floor(rand() * pool.length)] : shape;
 
   const { length, stepsPerBeat } = p;
 

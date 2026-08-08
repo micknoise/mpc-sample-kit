@@ -115,26 +115,32 @@ export const STYLES = {
   // backbeat clear and pushes into the next bar.
   'boom-bap': () => ({
     bpm: 88, swing: 0.18, humanizeMs: 6, humanizeVel: 12,
+    lock: [],
     tracks: { kick: 'x..o..s...o.....', snare: '....x..s|....x.s.', hat: 'o.oo o.o.|o.oo o.o.' },
   }),
   techno: () => ({
     bpm: 132, swing: 0, humanizeMs: 1, humanizeVel: 4,
+    lock: ['kick'],
     tracks: { kick: 'x...x...x...x...', hat: '..o...o...o...o.', clap: '....x.......x...' },
   }),
   house: () => ({
     bpm: 124, swing: 0.08, humanizeMs: 2, humanizeVel: 6,
+    lock: ['kick'],
     tracks: { kick: 'x...x...x...x...', hatOpen: '..o...o...o...o.', clap: '....x.......x...', shaker: 'ssssssssssssssss' },
   }),
   dnb: () => ({
     bpm: 174, swing: 0.05, humanizeMs: 3, humanizeVel: 10,
+    lock: [],
     tracks: { kick: 'x.......|..x.....', snare: '....x...|....x...', hat: 'o.o.o.o.|o.o.o.o.' },
   }),
   trap: () => ({
     bpm: 140, swing: 0, humanizeMs: 2, humanizeVel: 8,
+    lock: [],
     tracks: { kick: 'x.....x.|..x.....', snare: '....x.......x...', hat: 'oooooooooooooooo' },
   }),
   afrobeat: () => ({
     bpm: 108, swing: 0.12, humanizeMs: 8, humanizeVel: 14,
+    lock: ['rim'],
     tracks: { kick: 'x..x..x.|x..x..x.', rim: '..x..x..|..x..x..', shaker: 'o.o.o.o.|o.o.o.o.' },
   }),
   // Swung ride with the classic skip note, hi-hat closing on 2 and 4, and a
@@ -148,6 +154,12 @@ export const STYLES = {
   jazz: () => ({
     bpm: 132, swing: 1 / 3, swingUnit: 2, humanizeMs: 12, humanizeVel: 18,
     dynamics: { depth: 0.5, conformity: 0.7 },
+    // The ride ostinato is the groove's identity - a jazz drummer keeps it
+    // going and comps against it. Letting drift mutate the ride turns the
+    // pattern into unrelated cymbal hits. The kick stays free to move.
+    lock: ['ride'],
+    // Tom rolls across the kit are not the jazz vocabulary; comping figures are.
+    fillShapes: ['sparse', 'triplet'],
     tracks: {
       ride: 'x...o.o.x...o.o.',
       hat: '....o.......o...',
@@ -162,6 +174,7 @@ export const STYLES = {
   'free-jazz': () => ({
     bpm: 148, swing: 0.28, swingUnit: 2, humanizeMs: 22, humanizeVel: 30,
     dynamics: { depth: 0.7, conformity: 0.35, anchorDownbeat: false },
+    lock: [],
     tracks: {
       ride: 'x.oo.x.o.oxo.x.o',
       snare: '.x..s.x..o.x.s.x',
@@ -173,6 +186,7 @@ export const STYLES = {
 
   garage: () => ({
     bpm: 134, swing: 0.32, humanizeMs: 4, humanizeVel: 10,
+    lock: ['kick'],
     tracks: { kick: 'x.........x...o.', snare: '....x.......x...', hat: 'o.oo.o.oo.o.o.o.' },
   }),
 };
